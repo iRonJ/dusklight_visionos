@@ -53,3 +53,63 @@ compile_commands.json
 pipeline_cache.bin
 
 extract
+
+# ===========================================================================
+# Sensitive — MUST NOT be published to a public repository
+# ===========================================================================
+
+# Copyrighted game dumps — you must provide your own; never commit them.
+# (*.iso is already covered above.) Covers every disc format Dusklight loads.
+*.gcm
+*.rvz
+*.wia
+*.wbfs
+*.ciso
+*.gcz
+*.nkit.iso
+*.tgc
+# Common dump locations
+roms/
+/rom/
+rom.iso
+
+# Code signing, certificates, private keys, provisioning profiles
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.pfx
+*.cer
+*.der
+*.certSigningRequest
+*.p8
+*.pem
+*.key
+*.keychain
+*.keychain-db
+
+# Android signing / local SDK config
+*.jks
+*.keystore
+keystore.properties
+key.properties
+signing.properties
+local.properties
+
+# Secrets, API keys, and local environment (Sentry DSN, Discord IDs, tokens, …)
+.env
+.env.*
+*.env
+secrets.*
+*.secret
+*.secrets
+credentials.json
+
+# Logs and crash reports
+*.log
+*.crash
+*.ips
+*.dmp
+
+# Dusklight runtime user data (may contain local file paths / personal data)
+config.json
+achievements.json

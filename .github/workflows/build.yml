@@ -100,6 +100,10 @@ jobs:
             platform: ios
             preset: x-ios-ci
             artifact_name: ios-appleclang-arm64
+          - name: AppleClang visionOS arm64
+            platform: visionos
+            preset: x-visionos-ci
+            artifact_name: visionos-appleclang-arm64
           # - name: AppleClang tvOS arm64
           #   platform: tvos
           #   preset: x-tvos-ci
@@ -125,6 +129,12 @@ jobs:
         run: |
           rustup toolchain install nightly
           rustup target add --toolchain nightly aarch64-apple-tvos
+
+      - name: Install Rust visionOS target
+        if: matrix.platform == 'visionos'
+        run: |
+          rustup toolchain install nightly
+          rustup target add --toolchain nightly aarch64-apple-visionos
 
       - name: Install Rust x86_64 macOS target
         if: endsWith(matrix.preset, 'x86_64')

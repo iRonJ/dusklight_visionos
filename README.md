@@ -14,6 +14,9 @@ Dusklight is a reverse-engineered reimplementation of Twilight Princess.
 
 It aims to be as accurate as possible to the original while also providing new options, enhancements, and tools to customize your experience.
 
+> [!NOTE]
+> This fork additionally includes a **native Apple Vision (visionOS) port**. Dusklight builds and runs on visionOS — verified on the visionOS 26.5 Simulator and on Apple Vision Pro hardware — rendering in a window with a 21:9 presentation. See the [visionOS section of CLAUDE.md](CLAUDE.md#apple-vision-visionos-port) for the build, patches, and deployment notes.
+
 # Setup
 
 > [!IMPORTANT]
@@ -45,6 +48,10 @@ Currently, only the GameCube USA and EUR releases are supported. Support for oth
 - Launch Dusklight
 - Press **Select Disc Image** and provide the path to your supported game dump
 - Press **Play**!
+
+**Apple Vision Pro (visionOS)**
+- The visionOS port is built from source (no prebuilt release). See the [visionOS section of CLAUDE.md](CLAUDE.md#apple-vision-visionos-port) for build presets, required patches, signing, and `devicectl` deployment.
+- Once installed, launch Dusklight from the headset, press **Select Disc Image**, and provide your supported game dump.
 
 # Building
 

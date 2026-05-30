@@ -17,13 +17,17 @@
 #include <TargetConditionals.h>
 #endif
 
-#if defined(__APPLE__) && !TARGET_OS_IOS && !TARGET_OS_TV && !TARGET_OS_MACCATALYST
+// Note: on visionOS (xrOS) Apple sets TARGET_OS_VISION=1 but TARGET_OS_IOS=0,
+// so visionOS must be handled explicitly. It is UIKit-based, so it uses the
+// iOS UIDocumentPicker path (FileSelectDialog.m is built for visionOS too) and
+// must NOT fall into the macOS/AppKit NSOpenPanel path.
+#if defined(__APPLE__) && !TARGET_OS_IOS && !TARGET_OS_TV && !TARGET_OS_VISION && !TARGET_OS_MACCATALYST
 #define USE_MACOS_FOLDER_DIALOG 1
 #else
 #define USE_MACOS_FOLDER_DIALOG 0
 #endif
 
-#if defined(__APPLE__) && TARGET_OS_IOS && !TARGET_OS_MACCATALYST
+#if defined(__APPLE__) && (TARGET_OS_IOS || TARGET_OS_VISION) && !TARGET_OS_MACCATALYST
 #define USE_IOS_DIALOG 1
 #include "ios/FileSelectDialog.h"
 #else

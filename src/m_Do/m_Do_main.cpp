@@ -575,8 +575,12 @@ int game_main(int argc, char* argv[]) {
         config.startFullscreen = dusk::getSettings().video.enableFullscreen;
         config.windowPosX = -1;
         config.windowPosY = -1;
-        config.windowWidth = defaultWindowWidth * 2;
         config.windowHeight = defaultWindowHeight * 2;
+        // Seed a 64:27 (21:9) window. On iOS/tvOS/visionOS Aurora forces
+        // fullscreen, so this is only the requested size; the real render size
+        // comes from AuroraGetRenderSize().
+        config.windowWidth =
+            static_cast<u32>(static_cast<float>(config.windowHeight) * (64.0f / 27.0f));
         config.desiredBackend = ResolveDesiredBackend(parsed_arg_options);
         config.logCallback = &aurora_log_callback;
         config.logLevel = startupLogLevel;
@@ -600,11 +604,17 @@ int game_main(int argc, char* argv[]) {
         fmt::format("Dusklight {} [{}]", DUSK_WC_DESCRIBE, dusk::backend_name(auroraInfo.backend))
         .c_str());
 
+#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
+    // visionOS pins a fixed 64:27 (21:9) content frame (see updateRenderSize()),
+    // so Aurora must always letterbox/pillarbox it into the real display.
+    AuroraSetViewportPolicy(AURORA_VIEWPORT_FIT);
+#else
     if (dusk::getSettings().video.lockAspectRatio) {
         AuroraSetViewportPolicy(AURORA_VIEWPORT_FIT);
     } else {
         AuroraSetViewportPolicy(AURORA_VIEWPORT_STRETCH);
     }
+#endif
     VISetFrameBufferScale(dusk::getSettings().game.internalResolutionScale.getValue());
     switch (dusk::getSettings().game.resampler.getValue()) {
     case dusk::Resampler::Area:

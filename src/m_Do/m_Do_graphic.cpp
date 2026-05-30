@@ -5,6 +5,10 @@
 
 #include <cstdio>
 
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+
 #include "d/dolzel.h" // IWYU pragma: keep
 
 #include <base/PPCArch.h>
@@ -813,8 +817,17 @@ void mDoGph_gInf_c::updateRenderSize() {
     u32 width, height;
     AuroraGetRenderSize(&width, &height);
     JUTVideo::getManager()->setRenderSize(width, height);
+#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
+    // visionOS pins a fixed 64:27 (21:9) content frame regardless of the actual
+    // display shape; Aurora letterboxes/pillarboxes it into the real surface
+    // (AURORA_VIEWPORT_FIT, set in m_Do_main.cpp). l_tvSize[1].height stays
+    // FB_HEIGHT_BASE so this yields a width of ~1062.
+    l_tvSize[1].width =
+        static_cast<u16>(static_cast<float>(l_tvSize[1].height) * (64.0f / 27.0f));
+#else
     l_tvSize[1].width = static_cast<u16>(static_cast<float>(width) / static_cast<float>(height) *
                                          static_cast<float>(l_tvSize[1].height));
+#endif
     onWide();
 }
 #endif

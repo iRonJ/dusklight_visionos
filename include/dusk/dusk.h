@@ -15,9 +15,13 @@ namespace dusk {
 constexpr u32 defaultWindowWidth = 608;
 constexpr u32 defaultWindowHeight = 448;
 
-constexpr u32 defaultAspectRatioW = 19;
-constexpr u32 defaultAspectRatioH = 14;
+constexpr u32 defaultAspectRatioW = 64;
+constexpr u32 defaultAspectRatioH = 27;
 
-static_assert(defaultWindowWidth / defaultAspectRatioW == defaultWindowHeight / defaultAspectRatioH);
+// 64:27 (21:9) is the target presentation aspect ratio. These constants are
+// documentation only; the render-time aspect is driven dynamically by
+// updateRenderSize()/setTvSize() and the FB base coordinate space remains
+// defaultWindowWidth x defaultWindowHeight.
+static_assert(static_cast<float>(defaultAspectRatioW) / static_cast<float>(defaultAspectRatioH) > 2.0f);
 
 #endif  // DUSK_DUSK_H
