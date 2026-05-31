@@ -1,9 +1,15 @@
 #include "dusk/audio/DuskAudioSystem.h"
 
 #include <SDL3/SDL_init.h>
+#include <SDL3/SDL_hints.h>
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <span>
+
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 
 #include "JSystem/JAudio2/JASAiCtrl.h"
 #include "JSystem/JAudio2/JASChannel.h"
@@ -45,6 +51,16 @@ static int RenderNewAudioFrame();
 static void RenderAudioSubframe();
 
 static void InitSDL3Output() {
+#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
+    // visionOS's default CoreAudio IO buffer is small, and the GameCube DSP
+    // mixer runs on the SDL audio callback thread (rendering a full audio frame
+    // per call) while competing with the Dawn/Metal render thread. Under that
+    // contention the small buffer underruns periodically -> audible crackle /
+    // dropouts. Request a larger device buffer to add scheduling slack. Must be
+    // set before the audio device is opened. visionOS-only; other platforms keep
+    // their existing (lower-latency) behavior.
+    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "2048");
+#endif
     SDL_Init(SDL_INIT_AUDIO);
 
     constexpr SDL_AudioSpec spec = {
@@ -156,6 +172,18 @@ void RenderAudioSubframe() {
                 OutInterleaveBuffer[i] += static_cast<f32>(mixData[i]) / static_cast<f32>(0x7FFF);
             }
         }
+    }
+
+    // Saturate to [-1, 1] before handing the buffer to SDL's resampler / CoreAudio.
+    // The hardware DSP mixer saturates at every s16 mix step (see JASDriver::
+    // mixInterleaveTrack), but this f32 reimplementation sums voices, reverb, HRTF
+    // and the movie-player track (added above) without clamping, so the result can
+    // exceed unity. Out-of-range samples are hard-clipped downstream, producing
+    // harsh high-frequency distortion (and audibly distorted cutscene audio, where
+    // the unclamped movie track is mixed in). Clamping here matches the hardware's
+    // saturating behavior and keeps the resampler input in range.
+    for (f32& sample : OutInterleaveBuffer) {
+        sample = std::clamp(sample, -1.0f, 1.0f);
     }
 
     SDL_PutAudioStreamData(PlaybackStream, &OutInterleaveBuffer, sizeof(OutInterleaveBuffer));

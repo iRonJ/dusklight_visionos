@@ -137,6 +137,9 @@ static void ResetChannel(JASDsp::TChannel& channel, ChannelAuxData& aux) {
     aux.decodeBufCount = 0;
     aux.resamplePos = 0.0;
     aux.resamplePrev = 0;
+    aux.resamplePrev2 = 0;
+    aux.aaLp1 = 0.0f;
+    aux.aaLp2 = 0.0f;
 
     aux.oscPhase = 0;
 
@@ -672,10 +675,30 @@ static void RenderChannel(
     // how many input samples we step per output sample, aka the resampling ratio
     f32 step = (f32)PitchToSampleRate(channel.mPitch) / SampleRate;
 
-    // how many input samples to resample to DSP_SUBFRAME_SIZE output samples
-    int needed = static_cast<int>(channelAux.resamplePos + DSP_SUBFRAME_SIZE * step) + 2;
+    // how many input samples to resample to DSP_SUBFRAME_SIZE output samples.
+    // +3 leaves room for the y[+1] (nextnext) lookahead tap of the 4-point interpolator.
+    int needed = static_cast<int>(channelAux.resamplePos + DSP_SUBFRAME_SIZE * step) + 3;
 
+    const int decodedBefore = channelAux.decodeBufCount;
     FillDecodeBuf(channel, channelAux, needed);
+
+    // Anti-aliasing: when the voice is pitched up (step > 1) the resampler decimates the
+    // source, so source content above the (reduced) output Nyquist folds back as aliasing
+    // and makes high-pitched SFX sound harsh. The cubic interpolator below improves
+    // interpolation accuracy but does NOT band-limit decimation, so low-pass the freshly
+    // decoded source samples first. Cutoff ~ Nyquist/step (fraction of the source rate),
+    // realized as two cascaded one-poles (~12 dB/oct). State persists across subframes for
+    // continuity; only newly decoded samples are filtered so each is filtered exactly once.
+    if (step > 1.0f) {
+        const f32 fc = 0.45f / step;  // normalized cutoff (cycles/sample), with a little margin
+        const f32 a = 1.0f - expf(-2.0f * M_PI * fc);
+        for (int k = decodedBefore; k < channelAux.decodeBufCount; k++) {
+            channelAux.aaLp1 += a * (static_cast<f32>(channelAux.decodeBuf[k]) - channelAux.aaLp1);
+            channelAux.aaLp2 += a * (channelAux.aaLp1 - channelAux.aaLp2);
+            channelAux.decodeBuf[k] =
+                static_cast<s16>(std::clamp(channelAux.aaLp2, -32768.0f, 32767.0f));
+        }
+    }
 
     // source ran dry, channel is finished
     if(channelAux.decodeBufCount < needed) {
@@ -684,25 +707,42 @@ static void RenderChannel(
 
     DspSubframe audioLoadBuffer = {};
     f32 pos = channelAux.resamplePos;
-    s16 prev = channelAux.resamplePrev;
-    s16 next = channelAux.decodeBufCount > 0 ? channelAux.decodeBuf[0] : prev;
+    const int count = channelAux.decodeBufCount;
+    // 4-point window: prev2 = y[-1], prev = y[0], next = y[+1], nextnext = y[+2].
+    // prev/prev2 carry over from the previous subframe for continuity.
+    s16 prev2 = channelAux.resamplePrev2;
+    s16 prev  = channelAux.resamplePrev;
+    s16 next     = count > 0 ? channelAux.decodeBuf[0] : prev;
+    s16 nextnext = count > 1 ? channelAux.decodeBuf[1] : next;
     int srcIdx = 0;
 
-    // linear resampling and f32 conversion
+    // 4-point cubic (Catmull-Rom) resampling and f32 conversion. Higher-order than the
+    // original linear interpolation, which aliased badly on pitched-up samples and made
+    // bright/high-frequency content (e.g. cymbals) sound harsh. Note: this is a quality
+    // enhancement over the hardware DSP's linear interpolation, not a bit-accurate match.
     for (int i = 0; i < DSP_SUBFRAME_SIZE; i++) {
-        audioLoadBuffer[i] = (prev + pos * (next - prev)) / 32768.0f;
+        const f32 ym1 = prev2, y0 = prev, y1 = next, y2 = nextnext;
+        const f32 c0 = y0;
+        const f32 c1 = 0.5f * (y1 - ym1);
+        const f32 c2 = ym1 - 2.5f * y0 + 2.0f * y1 - 0.5f * y2;
+        const f32 c3 = 0.5f * (y2 - ym1) + 1.5f * (y0 - y1);
+        audioLoadBuffer[i] = (((c3 * pos + c2) * pos + c1) * pos + c0) / 32768.0f;
+
         pos += step;
         while (pos >= 1.0f) {
             pos -= 1.0f;
+            prev2 = prev;
             prev = next;
+            next = nextnext;
             srcIdx++;
-            next = srcIdx < channelAux.decodeBufCount ? channelAux.decodeBuf[srcIdx] : prev;
+            nextnext = (srcIdx + 1) < count ? channelAux.decodeBuf[srcIdx + 1] : next;
         }
     }
 
     // save resampler state for the next subframe, prevents popping on pitch change
     channelAux.resamplePos = pos;
     channelAux.resamplePrev = prev;
+    channelAux.resamplePrev2 = prev2;
 
     // IIR FILTER
 

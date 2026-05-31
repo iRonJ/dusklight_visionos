@@ -52,6 +52,16 @@ namespace dusk::audio {
         f32 resamplePos;
         // last consumed sample from decodeBuf
         s16 resamplePrev;
+        // sample consumed before resamplePrev; needed as the y[-1] tap for 4-point
+        // (cubic) interpolation so the resampler has continuous history across subframes
+        s16 resamplePrev2;
+
+        // Anti-aliasing low-pass state (2 cascaded one-poles), applied to freshly
+        // decoded source samples when the voice is pitched up (resample step > 1) to
+        // band-limit before decimation. Prevents aliasing that makes high-pitched
+        // SFX sound harsh. Persists across subframes for filter continuity.
+        f32 aaLp1;
+        f32 aaLp2;
 
         // phase of oscillator channels
         u16 oscPhase;
