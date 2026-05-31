@@ -36,10 +36,14 @@ general audio-correctness improvements and are **not** visionOS-gated unless not
 | 2 | Harsh distortion (esp. cutscenes) | The f32 mix (voices + reverb + HRTF + master volume + the movie track) was summed with **no saturation**, unlike the hardware DSP which saturates at every s16 mix step (`JASDriver::mixInterleaveTrack`). Out-of-range samples were hard-clipped by SDL's resampler / CoreAudio | Saturate the interleaved output to `[-1, 1]` before `SDL_PutAudioStreamData` | `DuskAudioSystem.cpp` (`RenderAudioSubframe`) | all platforms |
 | 3 | Harsh highs (broad) | The per-voice pitch resampler used **2-point linear interpolation**, whose piecewise-linear corners fold HF energy into audible distortion | Upgrade to **4-point cubic (Catmull-Rom)** interpolation (added `resamplePrev2` history) | `DuskDsp.cpp` (`RenderChannel`), `DuskDsp.hpp` | all platforms |
 | 4 | Harsh high-**pitched** SFX (cymbals, focus/lock-on) | When a voice is pitched up (`step > 1`) the resampler **decimates** the source with no band-limiting → aliasing. Cubic interpolation improves accuracy but does **not** anti-alias decimation | **Anti-aliasing low-pass before decimation**: two cascaded one-poles (~12 dB/oct), cutoff `≈ 0.45/step`, applied only to freshly-decoded samples when `step > 1`, state carried across subframes | `DuskDsp.cpp` (`RenderChannel`), `DuskDsp.hpp` (`aaLp1`/`aaLp2`) | all platforms (engages only on pitch-up) |
+| 5 | **Cutscene audio + video both stutter** (video stutters even at a steady, locked 120 fps) | **The bytes-vs-frames unit bug.** `GetNewAudio`'s `needed` is in **bytes**, but `RenderNewAudioFrame` returned a **sample-frame count** (`DSP_SUBFRAME_SIZE`, ~8× too small). Each audio callback therefore rendered ~8× too many subframes and called the movie mix callback ~8× too often, **draining the movie player's decoded-audio queue ~8× faster than the THP thread decodes it** → near-constant underflow → silence/stutter. Because THP video is **synced to the audio clock**, the video stuttered with it. (Confirmed by instrumentation: **19,396 underflow events / 1.53M samples silenced** in one cutscene → **0** after the fix.) | Return **bytes pushed** (`countSubframes * sizeof(OutInterleaveBuffer)`) so the callback consumes at the correct rate | `DuskAudioSystem.cpp` (`RenderNewAudioFrame`) | all platforms |
+| 6 | Cutscene video interpolation judder | Frame interpolation kept running during movie playback (the `STBWAIT` cut action wasn't in the camera's presentation-sync list, `d_camera.cpp` ~10435), interpolating pre-rendered THP video and contending with the decode threads | Request presentation sync (which disables interpolation) **every frame the movie draws** | `d_a_movie_player.cpp` (`daMP_ActivePlayer_Draw`) | visionOS / PC (`TARGET_PC`) |
 
-Listening results so far: #1 reduced general crackle; #2 helped harshness "a tad"
+Listening results: #1 reduced general crackle; #2 helped harshness "a tad"
 (confirming clipping was a minor contributor); #3 made the highs "better"; #4
-targets the residual pitched-up-SFX aliasing (e.g. the focus sound).
+removed the residual pitched-up-SFX aliasing (the focus/lock-on sound); **#5 (with
+#6) eliminated the cutscene audio *and* video stutter entirely** — user-confirmed
+"no audio issues and video anymore".
 
 ### Notes / interactions
 
@@ -77,19 +81,32 @@ effort/impact (all in `RenderChannel`, `DuskDsp.cpp`):
    **audio workgroup** (`os_workgroup` / `AudioWorkInterval`) from the mixer thread so
    the callback reliably meets its deadline under render load.
 
-## Open: cutscene sound stutter
+## Cutscene audio + video stutter — RESOLVED
 
-The picture is smooth; only the **sound** stutters during cutscenes. Confirmed:
-`daMP_MixAudio` consumes exactly the requested sample count regardless of the
-per-subframe vs per-frame call granularity, so the granularity is **not** the bug.
-Leading hypothesis: **THP audio-buffer underflow** — the movie audio decoder thread
-getting starved on visionOS, so `daMP_MixAudio` hits its `memset(dst, 0, …)` silence
-path (`d_a_movie_player.cpp` ~line 3514) → audible gaps.
+Both the cutscene **sound** and the **picture** stuttered (the picture juddered even
+at a steady, locked 120 fps). Resolved by fixes **#5** and **#6** above.
 
-**Next step:** add a passive underflow counter on that path, redeploy, play a
-cutscene, and pull the device log to confirm + size the fix (larger THP audio
-decode buffering and/or decoder-thread priority). Tracked separately from the
-harshness work above.
+How it was diagnosed (the symptoms were misleading — steady fps but stuttering A/V):
+
+1. Ruled out call granularity: `daMP_MixAudio` consumes exactly the requested sample
+   count, so per-subframe vs per-frame calls were not the bug.
+2. Added a passive **underflow counter** on the movie audio silence path
+   (`d_a_movie_player.cpp`, `daMP_MixAudio` → the `memset(dst, 0, …)` path), incremented
+   cheaply on the audio thread and summarized on the game thread at movie audio
+   start/stop (`daMP_audioInitWithMSound` / `daMP_audioQuitWithMSound`):
+   `[movie-audio] mixing ended: N underflow events, M samples silenced`.
+   That instrumentation is still in the code (TARGET_PC only) for future diagnosis.
+3. A device run reported **19,396 underflow events / 1,528,394 samples silenced** in one
+   cutscene → the movie audio queue was starved almost continuously.
+4. Root cause: the **bytes-vs-frames unit bug** (fix #5) caused ~8× over-consumption of
+   the movie audio queue. Key realization: **THP video is synced to the audio clock**, so
+   the starved audio dragged the video into stutter too — which is why a frame-pacing
+   fix alone (#6) didn't resolve the picture; the audio fix did.
+5. After fix #5 (+#6): user-confirmed **no audio or video stutter**. (Re-run the build to
+   see the underflow count fall to ~0.)
+
+If cutscene underflows ever return (e.g. on slower hardware), the next levers are larger
+THP audio-decode buffering and/or raising the THP decoder-thread priority.
 
 ## Verification & build
 

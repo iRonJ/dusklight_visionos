@@ -137,7 +137,16 @@ int RenderNewAudioFrame() {
         JASAudioThread::snIntCount -= 1;
     }
 
-    return static_cast<u16>(countSubframes) * DSP_SUBFRAME_SIZE;
+    // Return the number of BYTES pushed to the stream this call. SDL reports
+    // `needed` (in GetNewAudio) in bytes, and each subframe pushes
+    // sizeof(OutInterleaveBuffer) bytes (DSP_SUBFRAME_SIZE * NUM_CHANNELS f32s).
+    // This previously returned a sample-frame count (DSP_SUBFRAME_SIZE), i.e. 8x
+    // too small, so GetNewAudio looped ~8x too long -- over-producing and, during
+    // cutscenes, draining the movie player's decoded-audio queue ~8x faster than
+    // it is decoded. That starved the queue (tens of thousands of underflow events
+    // -> silence), which stuttered the cutscene audio and, because the THP video is
+    // synced to the audio clock, stuttered the video with it.
+    return static_cast<int>(countSubframes) * static_cast<int>(sizeof(OutInterleaveBuffer));
 }
 
 static void InterleaveOutputData(const OutputSubframe& data, std::span<f32> target) {

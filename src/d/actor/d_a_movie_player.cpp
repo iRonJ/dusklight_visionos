@@ -32,6 +32,8 @@
 #include "dusk/gx_helper.h"
 #include "dusk/os.h"
 #include "dusk/layout.hpp"
+#include "dusk/logging.h"
+#include "dusk/frame_interpolation.h"
 #if MOVIE_SUPPORT
 #include "turbojpeg.h"
 #endif
@@ -3491,6 +3493,14 @@ static u16 daMP_VolumeTable[] = {
     0x7247, 0x7430, 0x761E, 0x7810, 0x7A06, 0x7C00, 0x7DFE, 0x8000,
 };
 
+#if TARGET_PC
+// Diagnostic counters for cutscene audio stutter: incremented (cheaply, no I/O) on the
+// audio thread when the THP audio decoder has no buffer ready and we emit silence.
+// Summarized on the game thread at movie audio start/stop (see daMP_audio*WithMSound).
+static int sMovieAudioUnderflows = 0;
+static u32 sMovieAudioUnderflowSamples = 0;
+#endif
+
 #pragma push
 #pragma optimization_level 3
 static void daMP_MixAudio(s16* destination, s16*, u32 sample) {
@@ -3511,6 +3521,10 @@ static void daMP_MixAudio(s16* destination, s16*, u32 sample) {
 			do {
 				if (daMP_ActivePlayer.playAudioBuffer == (THPAudioBuffer*)NULL) {
 					if (!(daMP_ActivePlayer.playAudioBuffer = (THPAudioBuffer*)daMP_PopDecodedAudioBuffer(0))) {
+#if TARGET_PC
+						sMovieAudioUnderflows++;
+						sMovieAudioUnderflowSamples += requestSample;
+#endif
 						memset(dst, 0, requestSample * 4);
 						return;
 					}
@@ -3619,11 +3633,27 @@ static s16* daMP_audioCallbackWithMSound(s32 sample) {
 }
 
 static void daMP_audioInitWithMSound() {
+#if TARGET_PC
+    sMovieAudioUnderflows = 0;
+    sMovieAudioUnderflowSamples = 0;
+    DuskLog.info("[movie-audio] mixing started");
+#endif
     JASDriver::registerMixCallback(daMP_audioCallbackWithMSound, MIX_MODE_INTERLEAVE);
 }
 
 static void daMP_audioQuitWithMSound() {
     JASDriver::registerMixCallback(NULL, MIX_MODE_MONO);
+#if TARGET_PC
+    // Cutscene-audio stutter diagnostic: if the THP audio decoder couldn't keep up,
+    // these are non-zero (each underflow emitted silence -> audible stutter).
+    if (sMovieAudioUnderflows > 0) {
+        DuskLog.warn(
+            "[movie-audio] mixing ended: {} underflow events, {} samples silenced (decoder starved)",
+            sMovieAudioUnderflows, sMovieAudioUnderflowSamples);
+    } else {
+        DuskLog.info("[movie-audio] mixing ended: no underflows");
+    }
+#endif
 }
 
 static void daMP_PushUsedTextureSet(void* tex) {
@@ -4379,6 +4409,14 @@ static void daMP_ActivePlayer_Main() {
 
 static void daMP_ActivePlayer_Draw() {
 #if TARGET_PC
+    // Disable frame interpolation while a movie is on screen. The THP video is
+    // pre-rendered, so interpolating it produces judder/stutter even at a steady
+    // refresh, and the wasted interpolation work contends with the THP decode
+    // threads. request_presentation_sync() is reset every frame, so it must be
+    // requested every frame the movie draws (the camera-event hook in d_camera.cpp
+    // only covers a subset of cut actions and misses STBWAIT / movie playback).
+    dusk::frame_interp::request_presentation_sync();
+
     u16 width = JUTVideo::getManager()->getFbWidth();
     u16 height = JUTVideo::getManager()->getEfbHeight();
 
