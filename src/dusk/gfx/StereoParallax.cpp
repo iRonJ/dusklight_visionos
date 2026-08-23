@@ -1,4 +1,4 @@
-#include "src/dusk/gfx/StereoParallax.hpp"
+#include "dusk/gfx/StereoParallax.hpp"
 
 #include <aurora/aurora.h>
 #include <aurora/webgpu.hpp>
@@ -10,7 +10,7 @@
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreVideo/CVPixelBuffer.h>
-#include <IOSurface/IOSurface.h>
+#include <IOSurface/IOSurfaceRef.h>
 #endif
 
 namespace dusk::gfx {
@@ -80,9 +80,11 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     let raw_depth = textureSampleLevel(depth_texture, depth_sampler, input.position, 0.0);
 
     // Reprojection parallax disparity:
-    // Objects closer to camera (lower depth) shift in one direction,
-    // objects further away (higher depth) shift in the opposite direction.
-    let disparity = uniforms.eye_sign * uniforms.eye_separation * (uniforms.convergence_depth - raw_depth) * uniforms.depth_scale;
+    // Objects nearer than the convergence plane must shift toward the temple side of
+    // the eye that renders them (e.g. the left eye's image shifts right for near
+    // objects) to produce correct "crossed disparity" -- matching how a real stereo
+    // camera pair converged on convergence_depth would see them.
+    let disparity = uniforms.eye_sign * uniforms.eye_separation * (raw_depth - uniforms.convergence_depth) * uniforms.depth_scale;
 
     let ndc_x = (input.position.x * 2.0 - 1.0) + disparity * 2.0;
     let ndc_y = 1.0 - input.position.y * 2.0;
@@ -141,6 +143,11 @@ struct StereoParallaxPass::Impl {
     wgpu::Buffer indexBuffer;
     uint32_t indexCount = 0;
 
+    // Aurora's depth texture sampler uses linear filtering, but WebGPU forbids binding a
+    // filtering sampler to a `NonFiltering` bind group layout slot (required for
+    // texture_depth_2d reads without comparison). Depth is sampled point/nearest here.
+    wgpu::Sampler depthNearestSampler;
+
     EyeResources leftEye;
     EyeResources rightEye;
 
@@ -197,6 +204,16 @@ struct StereoParallaxPass::Impl {
     }
 
     void CreatePipeline() {
+        wgpu::SamplerDescriptor depthSamplerDesc{};
+        depthSamplerDesc.label = "StereoParallax Depth Nearest Sampler";
+        depthSamplerDesc.addressModeU = wgpu::AddressMode::ClampToEdge;
+        depthSamplerDesc.addressModeV = wgpu::AddressMode::ClampToEdge;
+        depthSamplerDesc.addressModeW = wgpu::AddressMode::ClampToEdge;
+        depthSamplerDesc.magFilter = wgpu::FilterMode::Nearest;
+        depthSamplerDesc.minFilter = wgpu::FilterMode::Nearest;
+        depthSamplerDesc.mipmapFilter = wgpu::MipmapFilterMode::Nearest;
+        depthNearestSampler = device.CreateSampler(&depthSamplerDesc);
+
         wgpu::ShaderSourceWGSL wgslDesc{};
         wgslDesc.code = kStereoWGSL;
 
@@ -271,7 +288,10 @@ struct StereoParallaxPass::Impl {
         wgpu::DepthStencilState depthStencil{};
         depthStencil.format = wgpu::TextureFormat::Depth32Float;
         depthStencil.depthWriteEnabled = true;
-        depthStencil.depthCompare = wgpu::CompareFunction::Always;
+        // The displaced grid can fold over itself near depth discontinuities (a near
+        // object's edge stretching over the background). Depth-test so the nearer
+        // (correct) surface wins instead of whichever triangle happens to rasterize last.
+        depthStencil.depthCompare = wgpu::CompareFunction::Less;
 
         wgpu::RenderPipelineDescriptor rpDesc{};
         rpDesc.label = "StereoParallax Render Pipeline";
@@ -288,7 +308,7 @@ struct StereoParallaxPass::Impl {
         pipeline = device.CreateRenderPipeline(&rpDesc);
     }
 
-    void SetupEyeResources(EyeResources& eye, float eyeSign, IOSurfaceRef colorSurface, IOSurfaceRef depthSurface, uint32_t width, uint32_t height) {
+    void SetupEyeResources(EyeResources& eye, IOSurfaceRef colorSurface, IOSurfaceRef depthSurface, uint32_t width, uint32_t height) {
         wgpu::BufferDescriptor ubDesc{};
         ubDesc.label = "StereoParallax Eye Uniforms";
         ubDesc.size = sizeof(UniformBufferData);
@@ -356,7 +376,7 @@ struct StereoParallaxPass::Impl {
         auto colorView = aurora::webgpu::get_present_source_view();
         auto colorSampler = aurora::webgpu::get_present_sampler();
         auto depthView = aurora::webgpu::get_depth_view();
-        auto depthSampler = aurora::webgpu::get_depth_sampler();
+        auto depthSampler = depthNearestSampler;
 
         if (!colorView || !depthView) {
             return;
@@ -431,8 +451,8 @@ bool StereoParallaxPass::Initialize(uint32_t width, uint32_t height) {
     m_impl->CreateGridMesh();
     m_impl->CreatePipeline();
 
-    m_impl->SetupEyeResources(m_impl->leftEye, -1.0f, m_leftColorSurface, m_leftDepthSurface, width, height);
-    m_impl->SetupEyeResources(m_impl->rightEye, 1.0f, m_rightColorSurface, m_rightDepthSurface, width, height);
+    m_impl->SetupEyeResources(m_impl->leftEye, m_leftColorSurface, m_leftDepthSurface, width, height);
+    m_impl->SetupEyeResources(m_impl->rightEye, m_rightColorSurface, m_rightDepthSurface, width, height);
 
     m_impl->resourcesReady = true;
     m_initialized = true;
@@ -448,6 +468,7 @@ void StereoParallaxPass::Shutdown() {
     m_impl->indexBuffer = {};
     m_impl->pipeline = {};
     m_impl->bindGroupLayout = {};
+    m_impl->depthNearestSampler = {};
     m_impl->resourcesReady = false;
 
 #if defined(__APPLE__)

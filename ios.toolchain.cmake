@@ -729,6 +729,8 @@ elseif(NOT DEFINED CMAKE_CXX_COMPILER)
           ERROR_QUIET
           OUTPUT_STRIP_TRAILING_WHITESPACE)
 endif()
+set(CMAKE_OBJC_COMPILER "${CMAKE_C_COMPILER}" CACHE INTERNAL "")
+set(CMAKE_OBJCXX_COMPILER "${CMAKE_CXX_COMPILER}" CACHE INTERNAL "")
 # Find (Apple's) libtool.
 if(DEFINED BUILD_LIBTOOL)
   # Environment variables are always preserved.
@@ -762,6 +764,8 @@ get_property(languages GLOBAL PROPERTY ENABLED_LANGUAGES)
 foreach(lang ${languages})
   set(CMAKE_${lang}_CREATE_STATIC_LIBRARY "${BUILD_LIBTOOL} -static -o <TARGET> <LINK_FLAGS> <OBJECTS> " CACHE INTERNAL "")
 endforeach()
+
+list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 
 # CMake 3.14+ support building for iOS, watchOS, and tvOS out of the box.
 if(MODERN_CMAKE)
@@ -902,6 +906,8 @@ if(DEFINED APPLE_TARGET_TRIPLE_INT)
   set(APPLE_TARGET_TRIPLE ${APPLE_TARGET_TRIPLE_INT} CACHE INTERNAL "")
   set(CMAKE_C_COMPILER_TARGET ${APPLE_TARGET_TRIPLE})
   set(CMAKE_CXX_COMPILER_TARGET ${APPLE_TARGET_TRIPLE})
+  set(CMAKE_OBJC_COMPILER_TARGET ${APPLE_TARGET_TRIPLE})
+  set(CMAKE_OBJCXX_COMPILER_TARGET ${APPLE_TARGET_TRIPLE})
   set(CMAKE_ASM_COMPILER_TARGET ${APPLE_TARGET_TRIPLE})
 endif()
 
@@ -1082,6 +1088,10 @@ set(CMAKE_TRY_COMPILE_PLATFORM_VARIABLES
 
 if(NAMED_LANGUAGE_SUPPORT_INT)
   list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES
+        CMAKE_OBJC_COMPILER
+        CMAKE_OBJC_COMPILER_TARGET
+        CMAKE_OBJCXX_COMPILER
+        CMAKE_OBJCXX_COMPILER_TARGET
         CMAKE_OBJC_FLAGS
         CMAKE_OBJC_DEBUG
         CMAKE_OBJC_MINSIZEREL
@@ -1110,7 +1120,8 @@ set(CMAKE_SHARED_LIBRARY_SONAME_C_FLAG "-install_name")
 # Note: CMAKE_FIND_ROOT_PATH is only useful when cross-compiling. Thus, do not set on macOS builds.
 if(NOT PLATFORM_INT MATCHES "^MAC.*$")
   list(APPEND CMAKE_FIND_ROOT_PATH "${CMAKE_OSX_SYSROOT_INT}" CACHE INTERNAL "")
-  set(CMAKE_IGNORE_PATH "/System/Library/Frameworks;/usr/local/lib;/opt/homebrew" CACHE INTERNAL "")
+  set(CMAKE_IGNORE_PATH "/System/Library/Frameworks;/usr/local/lib;/opt/homebrew;/opt/X11;/usr/X11R6;/usr/X11" CACHE INTERNAL "")
+  set(CMAKE_IGNORE_PREFIX_PATH "/opt/homebrew;/opt/X11;/usr/X11R6;/usr/X11;/usr/local" CACHE INTERNAL "")
 endif()
 
 # Default to searching for frameworks first.

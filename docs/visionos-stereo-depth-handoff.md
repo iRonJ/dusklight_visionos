@@ -1,5 +1,81 @@
 # visionOS "Window into the Scene" Stereo Depth — Handoff
 
+## Status update (post-implementation review)
+
+An initial implementation landed in commit `bcf532c0` (+ companion `extern/aurora` submodule
+commit `39cf8b0`). It follows this doc's architecture closely (post-render WebGPU hook, depth-
+parallax grid mesh, IOSurface/`SharedTextureMemory` bridge, Swift `ImmersiveSpace`/`CompositorLayer`
+shim). A review pass found and fixed several bugs in it — see git history on those two commits/
+files for the fixes. Worth recording here since it corrects/extends this doc's own predictions:
+
+- **The Swift-in-CMake risk called out below did NOT materialize as feared.** `enable_language(Swift)`
+  in a Ninja-generated cross-compile target for `VISIONOS`/`SIMULATOR_VISIONOS` works fine as of
+  CMake 3.26 + Xcode 26.5's `swiftc` — confirmed by actually configuring the preset. The static-lib
+  split this doc recommended is exactly what was built (`dusklight_visionos_swift`).
+- **A different, more serious entry-point conflict was found instead, and is more important than
+  anything flagged in the original doc.** `dusklight`'s `CMakeLists.txt` unconditionally links
+  `aurora::main` (a static lib wrapping `extern/aurora/lib/main.cpp`, which defines the real
+  `int main()` and expects a matching `aurora_main()` — provided today by the `#define main
+  aurora_main` trick in `src/dusk/main.cpp`, active on every other platform). SDL3's own iOS/tvOS/
+  visionOS main-shim (`src/main/ios/SDL_sysmain_callbacks.m`, gated on `SDL_PLATFORM_IOS` — which
+  SDL defines for visionOS too, since Apple sets `TARGET_OS_IPHONE=1` there) *also* expects to own
+  the process entry via `UIApplicationMain`. The stereo-depth implementation's visionOS branch of
+  `main.cpp` stopped defining `aurora_main` (replacing it with `dusklight_start_game_thread()`,
+  called from the new SwiftUI `@main` App's `init()`), but nothing removed `aurora::main` from the
+  link. Result: on visionOS, two things both try to own `main()` (SDL/Aurora's classic entry vs.
+  Swift's `@main`-synthesized one), and since `aurora::main` links first, its object satisfies the
+  linker's `_main` requirement, so the Swift object (and everything reachable only from it —
+  `dusklight_visionos_start`, the whole CompositorServices path) never even gets pulled from the
+  archive, while `aurora::main` itself is left calling an undefined `aurora_main`. **This would have
+  been a link failure**, not a runtime bug — fixed by making `aurora::main` linkage conditional on
+  `NOT VISIONOS` in the root `CMakeLists.txt` (see the `if (VISIONOS) ... else ...` around the
+  `dusklight` target's `target_link_libraries` call).
+  - **Residual, unverified risk from this same fix**: `dusklight_start_game_thread()` now runs the
+    *entire* engine — including `aurora_initialize()`/SDL video+window setup — on a background
+    `std::thread`, not the real process main thread (which is now owned by SwiftUI/UIKit's run
+    loop). SDL's iOS video backend doesn't have a hard-asserted main-thread requirement everywhere
+    (checked: only its message-box code explicitly calls this out), but UIKit APIs are documented
+    as main-thread-only in general. This has **not** been verified on-device; if window/event
+    behavior looks wrong, this thread choice is the first thing to suspect.
+- **Two genuine compile errors** in `src/dusk/ios/VisionCompositorRenderer.mm`, both now fixed:
+  `cp_layer_renderer_wait_until_instant` doesn't exist in the SDK (real function is the free
+  function `cp_time_wait_until(cp_time_t)`); and
+  `ar_world_tracking_provider_query_device_anchor_at_timestamp`'s second parameter is
+  `CFTimeInterval` (a `double`), not `cp_time_t` — needs `cp_time_to_cf_time_interval()` first.
+- **A WebGPU validation bug** in `StereoParallax.cpp`: the depth bind-group-layout entry declared
+  `SamplerBindingType::NonFiltering` (required for `texture_depth_2d` reads) but was bound Aurora's
+  actual depth sampler, which is Linear-filtering (created for on-screen presentation, not for this
+  use) — a Filtering sampler bound to a NonFiltering slot fails WebGPU validation. Fixed by giving
+  `StereoParallaxPass` its own dedicated Nearest-filter sampler for depth reads.
+- **A likely-inverted stereo convergence sign** in the WGSL disparity formula — worked through the
+  parallel-camera-with-convergence-shift math twice (two independent derivations agreed): as
+  written, near objects would get "uncrossed" disparity (the direction correct for far objects),
+  which reads as pseudostereo/inverted depth. Fixed by swapping the subtraction order
+  (`raw_depth - convergence_depth` instead of `convergence_depth - raw_depth`). **This is the one
+  fix in this list that's a derivation, not a spec-verified fact — worth a visual sanity check on
+  device** (near things should pop toward you, not recede).
+- **A thread-safety cleanup**: `dusklight_start_game_thread`'s spawned thread was never joined or
+  detached; if the process ever reaches normal static destruction with that thread still running,
+  `std::thread`'s destructor calls `std::terminate()`. Fixed with `.detach()`.
+- **Not fixed, flagged instead**: the depth values written into the CompositorServices drawable's
+  own depth attachment are the game's raw GX/Dawn depth-buffer values (arbitrary near/far curve, GC
+  camera units) blitted through unchanged — not remapped into the compositor's actual per-eye
+  projection space via `cp_drawable_compute_projection` (which isn't called anywhere in this file).
+  Reprojection/ATW will warp using assumed-wrong distances. Values are still depth-*ordered*
+  correctly, so this is probably "a bit off" rather than badly broken, but doing this correctly is
+  real follow-up work, not a one-line fix — left as-is pending device testing.
+- **Full compile verification was not possible in this environment.** `cmake --preset
+  visionos-default` on a from-scratch clone here fails during zlib's cross-compile self-checks
+  (`extern/aurora/extern/CMakeLists.txt`'s `FetchContent`-built zlib, hit because
+  `CMAKE_SYSTEM_NAME=visionOS` isn't a CMake-recognized platform, so several of zlib's own
+  `check_include_file`/`check_type_size` probes silently misbehave) — this reproduces even after
+  the aurora submodule's own zlib/protobuf reordering fix, and is very likely specific to this
+  environment resolving Dawn to "build from source" rather than a prebuilt package (the working
+  build this branch already had before the stereo-depth work presumably used a different Dawn
+  provider path that never exercised this zlib codepath on visionOS). All fixes above were verified
+  by cross-referencing the actual XROS 26.5 SDK headers and the fetched Dawn/SDL3 source for this
+  pinned revision, not by a full compiled build.
+
 ## Goal
 
 Dusklight currently runs on visionOS ([recent port](../CLAUDE.md#apple-vision-visionos-port)) by

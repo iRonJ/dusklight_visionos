@@ -228,7 +228,10 @@ if (CMAKE_SYSTEM_NAME STREQUAL Linux)
     set(CMAKE_INSTALL_RPATH "$ORIGIN")
     set(CMAKE_BUILD_RPATH "$ORIGIN")
 elseif (APPLE)
-    add_compile_options(-Wno-declaration-after-statement -Wno-non-pod-varargs)
+    add_compile_options(
+        $<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-Wno-declaration-after-statement>
+        $<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-Wno-non-pod-varargs>
+    )
     set(CMAKE_INSTALL_RPATH "$ORIGIN")
     set(CMAKE_BUILD_RPATH "$ORIGIN")
 elseif (MSVC)
@@ -297,7 +300,7 @@ endif ()
 # Use signed char on ARM to match the original game (and x86)
 string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _arch)
 if(_arch MATCHES "^(arm|aarch64)" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
-    add_compile_options(-fsigned-char)
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-fsigned-char>)
 endif()
 
 if (CMAKE_SYSTEM_NAME STREQUAL Windows)
@@ -480,7 +483,17 @@ endif ()
 
 target_compile_definitions(dusklight PRIVATE ${GAME_COMPILE_DEFS})
 target_include_directories(dusklight PRIVATE ${GAME_INCLUDE_DIRS})
-target_link_libraries(dusklight PRIVATE aurora::main ${GAME_LIBS} ${JSYSTEM_LINK_LIBRARIES})
+# On visionOS the process entry point is synthesized by the SwiftUI `@main` App struct
+# (platforms/visionos/Swift/DusklightVisionApp.swift) via ImmersiveSpace/CompositorLayer,
+# which is the only way to obtain a CompositorServices LayerRenderer. aurora::main provides
+# its own `main()` (routing to SDL's UIApplicationMain-based iOS entry) which would either
+# conflict with (duplicate `_main`) or starve (leave `aurora_main` undefined for) that Swift
+# entry point, so it must not be linked in on this platform.
+if (VISIONOS)
+    target_link_libraries(dusklight PRIVATE ${GAME_LIBS} ${JSYSTEM_LINK_LIBRARIES})
+else ()
+    target_link_libraries(dusklight PRIVATE aurora::main ${GAME_LIBS} ${JSYSTEM_LINK_LIBRARIES})
+endif ()
 target_precompile_headers(dusklight PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_SOURCE_DIR}/include/dusk_pch.hpp>")
 if (TARGET crashpad_handler)
     add_dependencies(dusklight crashpad_handler)
@@ -570,6 +583,7 @@ if (APPLE)
     endforeach ()
     set_target_properties(
         dusklight PROPERTIES
+        LINKER_LANGUAGE CXX
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_BUNDLE_NAME ${DUSK_BUNDLE_NAME}
         MACOSX_BUNDLE_GUI_IDENTIFIER ${DUSK_BUNDLE_IDENTIFIER}
@@ -609,12 +623,18 @@ if (VISIONOS)
         platforms/visionos/Swift/DusklightVisionApp.swift
         platforms/visionos/Swift/DusklightCompositorConfig.swift
     )
+    if (APPLE_TARGET_TRIPLE)
+        target_compile_options(dusklight_visionos_swift PRIVATE -target ${APPLE_TARGET_TRIPLE})
+    elseif (CMAKE_C_COMPILER_TARGET)
+        target_compile_options(dusklight_visionos_swift PRIVATE -target ${CMAKE_C_COMPILER_TARGET})
+    endif ()
 
     target_sources(dusklight PRIVATE src/dusk/ios/VisionCompositorRenderer.mm)
     set_source_files_properties(src/dusk/ios/VisionCompositorRenderer.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
 
     target_link_libraries(dusklight PRIVATE
         dusklight_visionos_swift
+        dawn::webgpu_dawn
         ${COMPOSITOR_SERVICES_FRAMEWORK}
         ${ARKIT_FRAMEWORK}
         ${SPATIAL_FRAMEWORK}

@@ -1,4 +1,4 @@
-#include "src/dusk/ios/VisionCompositorRenderer.h"
+#include "dusk/ios/VisionCompositorRenderer.h"
 
 #ifdef __APPLE__
 #include <TargetConditionals.h>
@@ -11,7 +11,7 @@
 
 #include <dawn/native/MetalBackend.h>
 #include <aurora/webgpu.hpp>
-#include "src/dusk/gfx/StereoParallax.hpp"
+#include "dusk/gfx/StereoParallax.hpp"
 
 #include <atomic>
 #include <thread>
@@ -100,7 +100,7 @@
     if (!timing) return;
 
     cp_time_t optimalInputTime = cp_frame_timing_get_optimal_input_time(timing);
-    cp_layer_renderer_wait_until_instant(_layerRenderer, optimalInputTime);
+    cp_time_wait_until(optimalInputTime);
 
     cp_drawable_t drawable = cp_frame_query_drawable(frame);
     if (!drawable) return;
@@ -110,9 +110,10 @@
     // Query head pose from ARKit at presentation timestamp
     cp_time_t presentationTime = cp_frame_timing_get_presentation_time(timing);
     if (_worldTracking) {
+        CFTimeInterval presentationTimeSeconds = cp_time_to_cf_time_interval(presentationTime);
         ar_device_anchor_t deviceAnchor = ar_device_anchor_create();
         ar_device_anchor_query_status_t status =
-            ar_world_tracking_provider_query_device_anchor_at_timestamp(_worldTracking, presentationTime, deviceAnchor);
+            ar_world_tracking_provider_query_device_anchor_at_timestamp(_worldTracking, presentationTimeSeconds, deviceAnchor);
         if (status == ar_device_anchor_query_status_success) {
             cp_drawable_set_device_anchor(drawable, deviceAnchor);
         }

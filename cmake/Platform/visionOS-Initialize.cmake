@@ -1,0 +1,4 @@
+include(Platform/Darwin-Initialize)
+
+set(VISIONOS 1)
+set(_CMAKE_FEATURE_DETECTION_TARGET_TYPE STATIC_LIBRARY)
