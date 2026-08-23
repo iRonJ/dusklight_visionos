@@ -42,12 +42,22 @@
         _commandQueue = [_device newCommandQueue];
         _running.store(false);
 
-        // Initialize ARKit for head tracking
-        _worldTracking = ar_world_tracking_provider_create(nil);
-        _arSession = ar_session_create();
-        if (_worldTracking && _arSession) {
-            ar_data_providers_t providers = ar_data_providers_create_with_data_providers(_worldTracking, nil);
-            ar_session_run(_arSession, providers);
+        // Initialize ARKit for head tracking if supported and authorized
+        _worldTracking = nil;
+        _arSession = nil;
+        @try {
+            if (ar_world_tracking_provider_is_supported()) {
+                _worldTracking = ar_world_tracking_provider_create(nil);
+                _arSession = ar_session_create();
+                if (_worldTracking && _arSession) {
+                    ar_data_providers_t providers = ar_data_providers_create_with_data_providers(_worldTracking, nil);
+                    ar_session_run(_arSession, providers);
+                }
+            }
+        } @catch (NSException *exception) {
+            NSLog(@"[Dusklight] ARKit world tracking optional fallback: %@", exception);
+            _worldTracking = nil;
+            _arSession = nil;
         }
 
         // Initialize the WebGPU stereo parallax hook
