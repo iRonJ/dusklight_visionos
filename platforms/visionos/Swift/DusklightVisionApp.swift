@@ -12,18 +12,47 @@ func dusklight_start_game_thread()
 struct LauncherView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissWindow) private var dismissWindow
+    @State private var isLaunching = false
 
     var body: some View {
-        VStack(spacing: 16) {
-            ProgressView()
-            Text("Starting Dusklight...")
-                .font(.headline)
+        VStack(spacing: 20) {
+            Image(systemName: "gamecontroller.fill")
+                .font(.system(size: 52))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.tint)
+
+            VStack(spacing: 4) {
+                Text("Dusklight")
+                    .font(.largeTitle.bold())
+                Text("The Legend of Zelda: Twilight Princess")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button {
+                isLaunching = true
+                Task {
+                    _ = await openImmersiveSpace(id: "DusklightImmersiveSpace")
+                    dismissWindow()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    if isLaunching {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "play.fill")
+                    }
+                    Text(isLaunching ? "Entering VR..." : "Play in Immersive VR")
+                        .font(.headline)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isLaunching)
         }
-        .padding(24)
-        .task {
-            _ = await openImmersiveSpace(id: "DusklightImmersiveSpace")
-            dismissWindow()
-        }
+        .padding(32)
+        .frame(width: 440, height: 300)
     }
 }
 
