@@ -99,6 +99,9 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 project(dusklight LANGUAGES C CXX VERSION ${DUSK_VERSION_STRING})
 if (APPLE)
     enable_language(OBJC OBJCXX)
+    if (VISIONOS OR SIMULATOR_VISIONOS OR CMAKE_SYSTEM_NAME STREQUAL visionOS)
+        enable_language(Swift)
+    endif ()
 endif ()
 # Adjust CMAKE_SYSTEM_PROCESSOR on Windows to match compiler target
 include(cmake/WindowsTargetProcessor.cmake)
@@ -592,6 +595,33 @@ if (IOS OR VISIONOS)
     target_sources(dusklight PRIVATE src/dusk/ios/FileSelectDialog.m)
     set_source_files_properties(src/dusk/ios/FileSelectDialog.m PROPERTIES COMPILE_FLAGS -fobjc-arc)
     target_link_libraries(dusklight PRIVATE ${UIKIT_FRAMEWORK} ${UNIFORM_TYPE_IDENTIFIERS_FRAMEWORK})
+endif ()
+
+if (VISIONOS)
+    find_library(COMPOSITOR_SERVICES_FRAMEWORK CompositorServices REQUIRED)
+    find_library(ARKIT_FRAMEWORK ARKit REQUIRED)
+    find_library(SPATIAL_FRAMEWORK Spatial REQUIRED)
+    find_library(IOSURFACE_FRAMEWORK IOSurface REQUIRED)
+    find_library(COREVIDEO_FRAMEWORK CoreVideo REQUIRED)
+    find_library(SWIFTUI_FRAMEWORK SwiftUI REQUIRED)
+
+    add_library(dusklight_visionos_swift STATIC
+        platforms/visionos/Swift/DusklightVisionApp.swift
+        platforms/visionos/Swift/DusklightCompositorConfig.swift
+    )
+
+    target_sources(dusklight PRIVATE src/dusk/ios/VisionCompositorRenderer.mm)
+    set_source_files_properties(src/dusk/ios/VisionCompositorRenderer.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
+
+    target_link_libraries(dusklight PRIVATE
+        dusklight_visionos_swift
+        ${COMPOSITOR_SERVICES_FRAMEWORK}
+        ${ARKIT_FRAMEWORK}
+        ${SPATIAL_FRAMEWORK}
+        ${IOSURFACE_FRAMEWORK}
+        ${COREVIDEO_FRAMEWORK}
+        ${SWIFTUI_FRAMEWORK}
+    )
 endif ()
 
 include(extern/aurora/cmake/AuroraCopyRuntimeDLLs.cmake)

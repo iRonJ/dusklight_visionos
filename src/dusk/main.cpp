@@ -217,11 +217,25 @@ int DuskMain(int argc, char* argv[]) {
 }
 #endif
 
-}  // namespace
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+#include <thread>
+
+extern "C" void dusklight_start_game_thread() {
+    static std::thread gameThread([]() {
+        char dummyProg[] = "dusklight";
+        char* argv[] = { dummyProg, nullptr };
+        DuskMain(1, argv);
+    });
+}
+#else
 int main(int argc, char* argv[]) {
     return DuskMain(argc, argv);
 }
+#endif
 
 #if _WIN32
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {

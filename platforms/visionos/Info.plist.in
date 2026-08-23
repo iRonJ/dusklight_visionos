@@ -52,12 +52,21 @@
     </array>
     <key>UIApplicationSupportsIndirectInputEvents</key>
     <true/>
+    <key>UIApplicationPreferredDefaultSceneSessionRole</key>
+    <string>UISceneSessionRoleImmersiveSpaceApplication</string>
     <key>UIApplicationSceneManifest</key>
     <dict>
       <key>UIApplicationSupportsMultipleScenes</key>
-      <false/>
+      <true/>
       <key>UISceneConfigurations</key>
       <dict>
+        <key>UISceneSessionRoleImmersiveSpaceApplication</key>
+        <array>
+          <dict>
+            <key>UISceneConfigurationName</key>
+            <string>Default Configuration</string>
+          </dict>
+        </array>
         <key>UIWindowSceneSessionRoleApplication</key>
         <array>
           <dict>
@@ -67,6 +76,8 @@
         </array>
       </dict>
     </dict>
+    <key>NSWorldSensingUsageDescription</key>
+    <string>Dusklight uses head tracking to provide stereoscopic depth and parallax.</string>
     <key>UIFileSharingEnabled</key>
     <true/>
     <key>LSSupportsOpeningDocumentsInPlace</key>

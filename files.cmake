@@ -1527,6 +1527,8 @@ set(DUSK_FILES
         src/dusk/discord_presence.cpp
         src/dusk/version.cpp
         src/dusk/action_bindings.cpp
+        src/dusk/gfx/StereoParallax.hpp
+        src/dusk/gfx/StereoParallax.cpp
 )
 
 set(DUSK_HTTP_BACKEND_FILES
