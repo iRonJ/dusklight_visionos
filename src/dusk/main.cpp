@@ -225,12 +225,16 @@ int DuskMain(int argc, char* argv[]) {
 #endif
 
 #if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+#include <SDL3/SDL_main.h>
+
 extern "C" void dusklight_start_game_thread() {
     static bool started = false;
     if (started) {
         return;
     }
     started = true;
+
+    SDL_SetMainReady();
 
     std::thread gameThread([]() {
         char dummyProg[] = "dusklight";
