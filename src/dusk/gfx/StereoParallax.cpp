@@ -505,6 +505,13 @@ void StereoParallaxPass::Render(void* encoderPtr) {
 
     m_impl->UpdateBindGroups();
 
+    if (!m_impl->pipeline || !m_impl->vertexBuffer || !m_impl->indexBuffer ||
+        !m_impl->leftEye.bindGroup || !m_impl->rightEye.bindGroup ||
+        !m_impl->leftEye.colorView || !m_impl->rightEye.colorView ||
+        !m_impl->leftEye.depthView || !m_impl->rightEye.depthView) {
+        return;
+    }
+
     auto* cmdEncoder = static_cast<wgpu::CommandEncoder*>(encoderPtr);
 
     auto renderEye = [&](EyeResources& eye, float eyeSign) {
