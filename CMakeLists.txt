@@ -424,6 +424,28 @@ if(ANDROID)
     list(APPEND GAME_COMPILE_DEFS TARGET_ANDROID=1)
 endif ()
 
+# Xcode is a multi-config generator and cannot express per-config COMPILE_DEFINITIONS on
+# individual source files ("Xcode does not support per-config per-source COMPILE_DEFINITIONS"),
+# which is what the $<$<CONFIG:Debug>:...> genexes below would require. For Xcode, generate a
+# single-configuration project and bake the definitions for that config instead. Every other
+# generator keeps the original per-config genexes.
+if (CMAKE_GENERATOR STREQUAL Xcode)
+    set(DUSK_XCODE_CONFIG "RelWithDebInfo" CACHE STRING
+        "Configuration to generate the Xcode project for (Xcode cannot vary per-source defines by config)")
+    set_property(CACHE DUSK_XCODE_CONFIG PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
+    set(CMAKE_CONFIGURATION_TYPES "${DUSK_XCODE_CONFIG}" CACHE STRING "" FORCE)
+    if (DUSK_XCODE_CONFIG STREQUAL "Debug")
+        set(DUSK_DEBUG_SOURCE_DEFS "DEBUG=1;PARTIAL_DEBUG=1")
+        set(DUSK_BASE_SOURCE_DEFS "NDEBUG=1;NDEBUG_DEFINED=1;DEBUG_DEFINED=0;PARTIAL_DEBUG=1")
+    else ()
+        set(DUSK_DEBUG_SOURCE_DEFS "")
+        set(DUSK_BASE_SOURCE_DEFS "NDEBUG=1;NDEBUG_DEFINED=1;DEBUG_DEFINED=0")
+    endif ()
+else ()
+    set(DUSK_DEBUG_SOURCE_DEFS "$<$<CONFIG:Debug>:DEBUG=1>;$<$<CONFIG:Debug>:PARTIAL_DEBUG=1>")
+    set(DUSK_BASE_SOURCE_DEFS "NDEBUG=1;NDEBUG_DEFINED=1;DEBUG_DEFINED=0;$<$<CONFIG:Debug>:PARTIAL_DEBUG=1>")
+endif ()
+
 # game_debug is for game code files that we know work when compiled with DEBUG=1
 # Of course, if building a release build, this distinction is irrelevant
 set(GAME_DEBUG_FILES
@@ -438,7 +460,7 @@ set(GAME_DEBUG_FILES
 set_source_files_properties(
         ${GAME_DEBUG_FILES}
         PROPERTIES
-        COMPILE_DEFINITIONS "$<$<CONFIG:Debug>:DEBUG=1>;$<$<CONFIG:Debug>:PARTIAL_DEBUG=1>"
+        COMPILE_DEFINITIONS "${DUSK_DEBUG_SOURCE_DEFS}"
 )
 
 # game_base is for all other game code files
@@ -452,7 +474,7 @@ set(GAME_BASE_FILES
 set_source_files_properties(
         ${GAME_BASE_FILES}
         PROPERTIES
-        COMPILE_DEFINITIONS "NDEBUG=1;NDEBUG_DEFINED=1;DEBUG_DEFINED=0;$<$<CONFIG:Debug>:PARTIAL_DEBUG=1>"
+        COMPILE_DEFINITIONS "${DUSK_BASE_SOURCE_DEFS}"
 )
 
 foreach(jsystem_lib IN LISTS JSYSTEM_LIBRARIES)
@@ -635,12 +657,18 @@ if (VISIONOS)
     target_link_libraries(dusklight PRIVATE
         dusklight_visionos_swift
         dawn::webgpu_dawn
+        PNG::PNG
         ${COMPOSITOR_SERVICES_FRAMEWORK}
         ${ARKIT_FRAMEWORK}
         ${SPATIAL_FRAMEWORK}
         ${IOSURFACE_FRAMEWORK}
         ${COREVIDEO_FRAMEWORK}
         ${SWIFTUI_FRAMEWORK}
+    )
+
+    add_custom_command(TARGET dusklight POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -DBUNDLE_DIR=$<TARGET_BUNDLE_DIR:dusklight> -P "${CMAKE_SOURCE_DIR}/cmake/FlattenVisionOSBundle.cmake"
+        COMMENT "Flattening visionOS bundle structure"
     )
 endif ()
 
