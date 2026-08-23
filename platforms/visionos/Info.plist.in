@@ -55,18 +55,16 @@
     <key>UIApplicationSceneManifest</key>
     <dict>
       <key>UIApplicationPreferredDefaultSceneSessionRole</key>
-      <string>UISceneSessionRoleImmersiveSpaceApplication</string>
+      <string>UIWindowSceneSessionRoleApplication</string>
       <key>UIApplicationSupportsMultipleScenes</key>
       <true/>
       <key>UISceneConfigurations</key>
       <dict>
-        <key>UISceneSessionRoleImmersiveSpaceApplication</key>
+        <key>UIWindowSceneSessionRoleApplication</key>
         <array>
           <dict>
             <key>UISceneConfigurationName</key>
             <string>Default Configuration</string>
-            <key>UISceneInitialImmersionStyle</key>
-            <string>UIImmersionStyleFull</string>
           </dict>
         </array>
       </dict>

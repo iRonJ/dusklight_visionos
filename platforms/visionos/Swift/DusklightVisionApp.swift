@@ -9,6 +9,24 @@ func dusklight_visionos_start(_ layerRenderer: LayerRenderer)
 @_silgen_name("dusklight_start_game_thread")
 func dusklight_start_game_thread()
 
+struct LauncherView: View {
+    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.dismissWindow) private var dismissWindow
+
+    var body: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+            Text("Starting Dusklight...")
+                .font(.headline)
+        }
+        .padding(24)
+        .task {
+            _ = await openImmersiveSpace(id: "DusklightImmersiveSpace")
+            dismissWindow()
+        }
+    }
+}
+
 @main
 struct DusklightVisionApp: App {
     @State private var immersionStyle: ImmersionStyle = .full
@@ -18,7 +36,12 @@ struct DusklightVisionApp: App {
     }
 
     var body: some Scene {
-        ImmersiveSpace {
+        WindowGroup {
+            LauncherView()
+        }
+        .windowResizability(.contentSize)
+
+        ImmersiveSpace(id: "DusklightImmersiveSpace") {
             CompositorLayer(configuration: DusklightCompositorConfig()) { layerRenderer in
                 dusklight_visionos_start(layerRenderer)
             }
