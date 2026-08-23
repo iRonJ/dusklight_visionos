@@ -18,12 +18,12 @@ struct DusklightVisionApp: App {
     }
 
     var body: some Scene {
-        ImmersiveSpace(id: "DusklightImmersiveSpace") {
+        ImmersiveSpace {
             CompositorLayer(configuration: DusklightCompositorConfig()) { layerRenderer in
                 dusklight_visionos_start(layerRenderer)
             }
         }
-        .immersionStyle(selection: $immersionStyle, in: .full, .mixed)
+        .immersionStyle(selection: $immersionStyle, in: .full)
     }
 }
 
