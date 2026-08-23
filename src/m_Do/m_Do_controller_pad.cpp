@@ -10,6 +10,7 @@
 #include "f_ap/f_ap_game.h"
 #include "m_Do/m_Do_Reset.h"
 #include "m_Do/m_Do_main.h"
+#include "dusk/gfx/StereoParallax.hpp"
 #include "tracy/Tracy.hpp"
 
 JUTGamePad* mDoCPd_c::m_gamePad[4];
@@ -119,6 +120,24 @@ void mDoCPd_c::convert(interface_of_controller_pad* pInterface, JUTGamePad* pPad
     mDoCPd_TRIGGER_CONV(pPad->getAnalogR(), pInterface->mTriggerRight);
 
     pInterface->mGamepadErrorFlags = pPad->getErrorStatus();
+
+    // Real-time stereo parallax tuning shortcuts (Hold L + R):
+    if ((pInterface->mButtonFlags & (PAD_TRIGGER_L | PAD_TRIGGER_R)) == (PAD_TRIGGER_L | PAD_TRIGGER_R)) {
+        auto* pass = dusk::gfx::GetStereoParallaxPass();
+        if (pass) {
+            if (pInterface->mPressedButtonFlags & PAD_BUTTON_UP) {
+                pass->AdjustEyeSeparation(+0.005f);
+            } else if (pInterface->mPressedButtonFlags & PAD_BUTTON_DOWN) {
+                pass->AdjustEyeSeparation(-0.005f);
+            } else if (pInterface->mPressedButtonFlags & PAD_BUTTON_LEFT) {
+                pass->AdjustConvergenceDepth(-0.05f);
+            } else if (pInterface->mPressedButtonFlags & PAD_BUTTON_RIGHT) {
+                pass->AdjustConvergenceDepth(+0.05f);
+            } else if (pInterface->mPressedButtonFlags & PAD_TRIGGER_Z) {
+                pass->ToggleEnabled();
+            }
+        }
+    }
 }
 
 void mDoCPd_c::LRlockCheck(interface_of_controller_pad* interface) {

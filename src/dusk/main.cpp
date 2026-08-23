@@ -218,31 +218,51 @@ int DuskMain(int argc, char* argv[]) {
 }
 #endif
 
-}  // namespace
+} // namespace
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
 
-#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
+// visionOS: the process entry point is the SwiftUI @main App struct
+// (platforms/visionos/Swift/DusklightVisionApp.swift). The launcher UI calls
+// these to start the engine on a background thread once the immersive space
+// is open; there is no C `main()` on this platform.
 #define SDL_MAIN_HANDLED
 #include <SDL3/SDL_main.h>
+#include <os/log.h>
 
-extern "C" void dusklight_start_game_thread() {
+extern "C" void dusklight_start_game_with_iso(const char* isoPath) {
     static bool started = false;
     if (started) {
+        os_log(OS_LOG_DEFAULT, "[Dusklight] Game already started, ignoring launch request");
         return;
     }
     started = true;
 
+    os_log(OS_LOG_DEFAULT, "[Dusklight] Starting game with isoPath: %{public}s",
+           isoPath ? isoPath : "<null>");
     SDL_SetMainReady();
 
-    std::thread gameThread([]() {
+    std::string pathStr = isoPath ? isoPath : "";
+    std::thread gameThread([pathStr]() {
         char dummyProg[] = "dusklight";
-        char* argv[] = { dummyProg, nullptr };
-        DuskMain(1, argv);
+        char dvdFlag[] = "--dvd";
+        std::vector<char*> argvList = {dummyProg};
+        if (!pathStr.empty()) {
+            argvList.push_back(dvdFlag);
+            argvList.push_back(const_cast<char*>(pathStr.c_str()));
+        }
+        argvList.push_back(nullptr);
+        int res = DuskMain(static_cast<int>(argvList.size() - 1), argvList.data());
+        os_log(OS_LOG_DEFAULT, "[Dusklight] DuskMain exited with code %d", res);
     });
     gameThread.detach();
+}
+
+extern "C" void dusklight_start_game_thread() {
+    dusklight_start_game_with_iso(nullptr);
 }
 #else
 int main(int argc, char* argv[]) {

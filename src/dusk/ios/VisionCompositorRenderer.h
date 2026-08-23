@@ -11,6 +11,7 @@ extern "C" {
 #endif
 
 void dusklight_visionos_start(cp_layer_renderer_t layerRenderer);
+void dusklight_visionos_stop(void);
 
 #ifdef __cplusplus
 }

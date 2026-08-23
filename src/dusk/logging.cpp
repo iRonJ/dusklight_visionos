@@ -187,6 +187,10 @@ void aurora_log_callback(AuroraLogLevel level, const char* module, const char* m
     }
 }
 #else
+#ifdef __APPLE__
+#include <os/log.h>
+#endif
+
 void aurora_log_callback(AuroraLogLevel level, const char* module, const char* message,
                          unsigned int len) {
     ZoneScoped;
@@ -203,6 +207,10 @@ void aurora_log_callback(AuroraLogLevel level, const char* module, const char* m
     FILE* out = LogStreamForLevel(level);
     WriteLogLine(out, levelStr, module, message, len);
     WriteLogLineToFile(levelStr, module, message, len);
+
+#ifdef __APPLE__
+    os_log_with_type(OS_LOG_DEFAULT, OS_LOG_TYPE_DEFAULT, "[Dusklight][%{public}s | %{public}s] %{public}.*s", levelStr, module, (int)len, message);
+#endif
 
     if (level == LOG_FATAL) {
         abort();

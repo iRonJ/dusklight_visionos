@@ -44,30 +44,18 @@
     <true/>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.adventure-games</string>
-    <key>UILaunchStoryboardName</key>
-    <string>LaunchScreen</string>
     <key>UIDeviceFamily</key>
     <array>
       <integer>7</integer>
     </array>
-    <key>UIApplicationSupportsIndirectInputEvents</key>
-    <true/>
+    <!-- SwiftUI app lifecycle (DusklightVisionApp) manages the scenes; multiple
+         scenes are required for the WindowGroup launcher + ImmersiveSpace. -->
     <key>UIApplicationSceneManifest</key>
     <dict>
       <key>UIApplicationPreferredDefaultSceneSessionRole</key>
       <string>UIWindowSceneSessionRoleApplication</string>
       <key>UIApplicationSupportsMultipleScenes</key>
       <true/>
-      <key>UISceneConfigurations</key>
-      <dict>
-        <key>UIWindowSceneSessionRoleApplication</key>
-        <array>
-          <dict>
-            <key>UISceneConfigurationName</key>
-            <string>Default Configuration</string>
-          </dict>
-        </array>
-      </dict>
     </dict>
     <key>NSWorldSensingUsageDescription</key>
     <string>Dusklight uses head tracking to provide stereoscopic depth and parallax.</string>

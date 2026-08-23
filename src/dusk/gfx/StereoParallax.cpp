@@ -11,6 +11,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreVideo/CVPixelBuffer.h>
 #include <IOSurface/IOSurfaceRef.h>
+#include <os/log.h>
 #endif
 
 namespace dusk::gfx {
@@ -63,7 +64,6 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
-    @location(1) out_depth: f32,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: StereoUniforms;
@@ -76,22 +76,84 @@ struct VertexOutput {
 fn vs_main(input: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.uv = input.position;
-
-    let raw_depth = textureSampleLevel(depth_texture, depth_sampler, input.position, 0.0);
-
-    // Reprojection parallax disparity:
-    // Objects nearer than the convergence plane must shift toward the temple side of
-    // the eye that renders them (e.g. the left eye's image shifts right for near
-    // objects) to produce correct "crossed disparity" -- matching how a real stereo
-    // camera pair converged on convergence_depth would see them.
-    let disparity = uniforms.eye_sign * uniforms.eye_separation * (raw_depth - uniforms.convergence_depth) * uniforms.depth_scale;
-
-    let ndc_x = (input.position.x * 2.0 - 1.0) + disparity * 2.0;
+    let ndc_x = input.position.x * 2.0 - 1.0;
     let ndc_y = 1.0 - input.position.y * 2.0;
-
-    out.clip_position = vec4<f32>(ndc_x, ndc_y, raw_depth, 1.0);
-    out.out_depth = raw_depth;
+    out.clip_position = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
     return out;
+}
+
+fn linear_depth_from_raw(raw_depth: f32) -> f32 {
+    if (raw_depth <= 0.0001) {
+        return 1.0;
+    }
+    let z_near = 0.5;
+    let z_far = 500.0;
+    return clamp((z_near * z_far) /
+                 (z_far - (1.0 - raw_depth) * (z_far - z_near)) / z_far,
+                 0.0, 1.0);
+}
+
+fn disparity_from_linear(linear_depth: f32) -> f32 {
+    return uniforms.eye_sign * uniforms.eye_separation
+         * (linear_depth - uniforms.convergence_depth) * uniforms.depth_scale;
+}
+
+// Solve source_x + disparity(depth(source_x)) = target_x. Starting from
+// several depth hypotheses lets foreground and background both compete at a
+// silhouette instead of connecting them with a stretched mesh triangle.
+fn solve_source(target_uv: vec2<f32>, initial_linear_depth: f32) -> vec4<f32> {
+    var source_uv = target_uv;
+    source_uv.x = clamp(target_uv.x - disparity_from_linear(initial_linear_depth), 0.0, 1.0);
+
+    var raw_depth = 0.0;
+    for (var iteration = 0; iteration < 4; iteration++) {
+        raw_depth = textureSampleLevel(depth_texture, depth_sampler, source_uv, 0i);
+        source_uv.x = clamp(target_uv.x - disparity_from_linear(linear_depth_from_raw(raw_depth)), 0.0, 1.0);
+    }
+
+    raw_depth = textureSampleLevel(depth_texture, depth_sampler, source_uv, 0i);
+    let projected_x = source_uv.x + disparity_from_linear(linear_depth_from_raw(raw_depth));
+    let residual = abs(projected_x - target_uv.x);
+    return vec4<f32>(source_uv, raw_depth, residual);
+}
+
+fn better_solution(candidate: vec4<f32>, current: vec4<f32>) -> bool {
+    let pixel_width = 1.0 / f32(textureDimensions(depth_texture).x);
+    if (candidate.w < current.w - pixel_width * 0.25) {
+        return true;
+    }
+    // Reverse-Z: the larger raw value is nearer and wins where two surfaces
+    // project onto the same output pixel.
+    return abs(candidate.w - current.w) <= pixel_width * 0.25 && candidate.z > current.z;
+}
+
+fn solution_covers_target(solution: vec4<f32>) -> bool {
+    let pixel_width = 1.0 / f32(textureDimensions(depth_texture).x);
+    return solution.w <= pixel_width * 0.75;
+}
+
+// A newly revealed background pixel has no inverse-reprojection solution:
+// the center view never rendered what was hidden behind the foreground
+// silhouette. Fixed-point iteration lands on alternating sides of that
+// depth discontinuity and, if accepted anyway, repeats the foreground as a
+// displaced clone. For only those uncovered pixels, inspect the complete
+// disparity interval and borrow the farthest available layer. Reverse-Z
+// makes the smallest raw depth the farthest surface.
+fn disocclusion_fill(target_uv: vec2<f32>) -> vec3<f32> {
+    let near_disparity = disparity_from_linear(0.0);
+    let far_disparity = disparity_from_linear(1.0);
+    var best = vec3<f32>(target_uv, 1.0);
+
+    for (var sample_index = 0; sample_index < 9; sample_index++) {
+        let t = f32(sample_index) / 8.0;
+        var source_uv = target_uv;
+        source_uv.x = clamp(target_uv.x - mix(near_disparity, far_disparity, t), 0.0, 1.0);
+        let raw_depth = textureSampleLevel(depth_texture, depth_sampler, source_uv, 0i);
+        if (raw_depth < best.z) {
+            best = vec3<f32>(source_uv, raw_depth);
+        }
+    }
+    return best;
 }
 
 struct FragmentOutput {
@@ -101,15 +163,51 @@ struct FragmentOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> FragmentOutput {
+    let near_solution = solve_source(in.uv, 0.0);
+    let middle_solution = solve_source(in.uv, 0.5);
+    let far_solution = solve_source(in.uv, 1.0);
+
+    var solution = vec4<f32>(in.uv, 0.0, 1.0);
+    var has_coverage = false;
+    if (solution_covers_target(near_solution)) {
+        solution = near_solution;
+        has_coverage = true;
+    }
+    if (solution_covers_target(middle_solution) &&
+        (!has_coverage || better_solution(middle_solution, solution))) {
+        solution = middle_solution;
+        has_coverage = true;
+    }
+    if (solution_covers_target(far_solution) &&
+        (!has_coverage || better_solution(far_solution, solution))) {
+        solution = far_solution;
+        has_coverage = true;
+    }
+
+    if (!has_coverage) {
+        let fill = disocclusion_fill(in.uv);
+        solution = vec4<f32>(fill.xy, fill.z, 0.0);
+    }
+
     var out: FragmentOutput;
-    out.color = textureSample(color_texture, color_sampler, in.uv);
-    out.depth = in.out_depth;
+    let game_color = textureSample(color_texture, color_sampler, solution.xy);
+    // The EFB alpha channel is game render state, not spatial-layer opacity.
+    // The 16:9 diorama is opaque everywhere inside its window.
+    out.color = vec4<f32>(game_color.rgb, 1.0);
+    out.depth = solution.z;
     return out;
 }
 )""";
 
-constexpr uint32_t kGridDivisionsX = 96;
-constexpr uint32_t kGridDivisionsY = 64;
+// Per-pixel inverse reprojection runs in the fragment shader, so a fullscreen
+// two-triangle mesh is sufficient and cannot bridge depth discontinuities.
+constexpr uint32_t kGridDivisionsX = 1;
+constexpr uint32_t kGridDivisionsY = 1;
+
+struct AppleReadyFence {
+    void* event = nullptr;
+    uint64_t value = 0;
+};
 
 struct UniformBufferData {
     float eye_sign;
@@ -243,13 +341,13 @@ struct StereoParallaxPass::Impl {
 
         // Depth texture
         bglEntries[3].binding = 3;
-        bglEntries[3].visibility = wgpu::ShaderStage::Vertex;
+        bglEntries[3].visibility = wgpu::ShaderStage::Fragment;
         bglEntries[3].texture.sampleType = wgpu::TextureSampleType::Depth;
         bglEntries[3].texture.viewDimension = wgpu::TextureViewDimension::e2D;
 
         // Depth sampler
         bglEntries[4].binding = 4;
-        bglEntries[4].visibility = wgpu::ShaderStage::Vertex;
+        bglEntries[4].visibility = wgpu::ShaderStage::Fragment;
         bglEntries[4].sampler.type = wgpu::SamplerBindingType::NonFiltering;
 
         wgpu::BindGroupLayoutDescriptor bglDesc{};
@@ -288,10 +386,10 @@ struct StereoParallaxPass::Impl {
         wgpu::DepthStencilState depthStencil{};
         depthStencil.format = wgpu::TextureFormat::Depth32Float;
         depthStencil.depthWriteEnabled = true;
-        // The displaced grid can fold over itself near depth discontinuities (a near
-        // object's edge stretching over the background). Depth-test so the nearer
-        // (correct) surface wins instead of whichever triangle happens to rasterize last.
-        depthStencil.depthCompare = wgpu::CompareFunction::Less;
+        // Aurora/GX uses reversed-Z (1.0 = near, 0.0 = far).
+        // Include the 0.0 far plane so skyboxes and cleared-background pixels
+        // survive a render target that is also cleared to reversed-Z far.
+        depthStencil.depthCompare = wgpu::CompareFunction::GreaterEqual;
 
         wgpu::RenderPipelineDescriptor rpDesc{};
         rpDesc.label = "StereoParallax Render Pipeline";
@@ -308,7 +406,7 @@ struct StereoParallaxPass::Impl {
         pipeline = device.CreateRenderPipeline(&rpDesc);
     }
 
-    void SetupEyeResources(EyeResources& eye, IOSurfaceRef colorSurface, IOSurfaceRef depthSurface, uint32_t width, uint32_t height) {
+    void SetupEyeResources(EyeResources& eye, IOSurfaceRef colorSurface, uint32_t width, uint32_t height) {
         wgpu::BufferDescriptor ubDesc{};
         ubDesc.label = "StereoParallax Eye Uniforms";
         ubDesc.size = sizeof(UniformBufferData);
@@ -316,7 +414,7 @@ struct StereoParallaxPass::Impl {
         eye.uniformBuffer = device.CreateBuffer(&ubDesc);
 
 #if defined(__APPLE__)
-        if (colorSurface != nullptr && depthSurface != nullptr) {
+        if (colorSurface != nullptr) {
             wgpu::SharedTextureMemoryIOSurfaceDescriptor colorMemDesc{};
             colorMemDesc.ioSurface = colorSurface;
             colorMemDesc.allowStorageBinding = false;
@@ -333,23 +431,6 @@ struct StereoParallaxPass::Impl {
             colorTexDesc.format = wgpu::TextureFormat::BGRA8Unorm;
             eye.colorTexture = eye.colorSharedMem.CreateTexture(&colorTexDesc);
             eye.colorView = eye.colorTexture.CreateView();
-
-            wgpu::SharedTextureMemoryIOSurfaceDescriptor depthMemDesc{};
-            depthMemDesc.ioSurface = depthSurface;
-            depthMemDesc.allowStorageBinding = false;
-
-            wgpu::SharedTextureMemoryDescriptor descDepth{};
-            descDepth.label = "StereoParallax Depth SharedMem";
-            descDepth.nextInChain = &depthMemDesc;
-            eye.depthSharedMem = device.ImportSharedTextureMemory(&descDepth);
-
-            wgpu::TextureDescriptor depthTexDesc{};
-            depthTexDesc.label = "StereoParallax Depth Texture";
-            depthTexDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
-            depthTexDesc.size = { width, height, 1 };
-            depthTexDesc.format = wgpu::TextureFormat::Depth32Float;
-            eye.depthTexture = eye.depthSharedMem.CreateTexture(&depthTexDesc);
-            eye.depthView = eye.depthTexture.CreateView();
         }
 #endif
 
@@ -361,15 +442,15 @@ struct StereoParallaxPass::Impl {
             colorTexDesc.format = wgpu::TextureFormat::BGRA8Unorm;
             eye.colorTexture = device.CreateTexture(&colorTexDesc);
             eye.colorView = eye.colorTexture.CreateView();
-
-            wgpu::TextureDescriptor depthTexDesc{};
-            depthTexDesc.label = "StereoParallax Fallback Depth Texture";
-            depthTexDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
-            depthTexDesc.size = { width, height, 1 };
-            depthTexDesc.format = wgpu::TextureFormat::Depth32Float;
-            eye.depthTexture = device.CreateTexture(&depthTexDesc);
-            eye.depthView = eye.depthTexture.CreateView();
         }
+
+        wgpu::TextureDescriptor depthTexDesc{};
+        depthTexDesc.label = "StereoParallax Depth Render Target";
+        depthTexDesc.usage = wgpu::TextureUsage::RenderAttachment;
+        depthTexDesc.size = { width, height, 1 };
+        depthTexDesc.format = wgpu::TextureFormat::Depth32Float;
+        eye.depthTexture = device.CreateTexture(&depthTexDesc);
+        eye.depthView = eye.depthTexture.CreateView();
     }
 
     void UpdateBindGroups() {
@@ -444,15 +525,13 @@ bool StereoParallaxPass::Initialize(uint32_t width, uint32_t height) {
 #if defined(__APPLE__)
     m_leftColorSurface = CreateIOSurfaceHelper(width, height, kCVPixelFormatType_32BGRA, 4);
     m_rightColorSurface = CreateIOSurfaceHelper(width, height, kCVPixelFormatType_32BGRA, 4);
-    m_leftDepthSurface = CreateIOSurfaceHelper(width, height, kCVPixelFormatType_DepthFloat32, 4);
-    m_rightDepthSurface = CreateIOSurfaceHelper(width, height, kCVPixelFormatType_DepthFloat32, 4);
 #endif
 
     m_impl->CreateGridMesh();
     m_impl->CreatePipeline();
 
-    m_impl->SetupEyeResources(m_impl->leftEye, m_leftColorSurface, m_leftDepthSurface, width, height);
-    m_impl->SetupEyeResources(m_impl->rightEye, m_rightColorSurface, m_rightDepthSurface, width, height);
+    m_impl->SetupEyeResources(m_impl->leftEye, m_leftColorSurface, width, height);
+    m_impl->SetupEyeResources(m_impl->rightEye, m_rightColorSurface, width, height);
 
     m_impl->resourcesReady = true;
     m_initialized = true;
@@ -472,6 +551,12 @@ void StereoParallaxPass::Shutdown() {
     m_impl->resourcesReady = false;
 
 #if defined(__APPLE__)
+    std::scoped_lock lock(m_appleFrameMutex);
+    m_leftReadyEvent = nullptr;
+    m_rightReadyEvent = nullptr;
+    m_leftReadyValue = 0;
+    m_rightReadyValue = 0;
+    m_readyGeneration = 0;
     if (m_leftColorSurface) { CFRelease(m_leftColorSurface); m_leftColorSurface = nullptr; }
     if (m_rightColorSurface) { CFRelease(m_rightColorSurface); m_rightColorSurface = nullptr; }
     if (m_leftDepthSurface) { CFRelease(m_leftDepthSurface); m_leftDepthSurface = nullptr; }
@@ -481,13 +566,27 @@ void StereoParallaxPass::Shutdown() {
     m_initialized = false;
 }
 
+#if defined(__APPLE__)
+bool StereoParallaxPass::GetAppleFramePair(StereoParallaxAppleFramePair& frames) const {
+    std::scoped_lock lock(m_appleFrameMutex);
+    if (!m_leftColorSurface || !m_rightColorSurface || !m_leftReadyEvent || !m_rightReadyEvent ||
+        m_leftReadyValue == 0 || m_rightReadyValue == 0 || m_readyGeneration == 0) {
+        return false;
+    }
+    frames.left = {m_leftColorSurface, m_leftReadyEvent, m_leftReadyValue};
+    frames.right = {m_rightColorSurface, m_rightReadyEvent, m_rightReadyValue};
+    frames.generation = m_readyGeneration;
+    return true;
+}
+#endif
+
 void StereoParallaxPass::Resize(uint32_t width, uint32_t height) {
     if (m_width == width && m_height == height) return;
     Initialize(width, height);
 }
 
 void StereoParallaxPass::Render(void* encoderPtr) {
-    if (!m_settings.enabled || !encoderPtr) {
+    if (!m_enabled.load(std::memory_order_relaxed) || !encoderPtr) {
         return;
     }
 
@@ -499,8 +598,14 @@ void StereoParallaxPass::Render(void* encoderPtr) {
 
     if (!m_initialized || m_width != curWidth || m_height != curHeight) {
         if (!Initialize(curWidth, curHeight)) {
+#if defined(__APPLE__)
+            os_log_error(OS_LOG_DEFAULT, "[Dusklight] StereoParallaxPass::Initialize failed for size (%u, %u)!", curWidth, curHeight);
+#endif
             return;
         }
+#if defined(__APPLE__)
+        os_log(OS_LOG_DEFAULT, "[Dusklight] StereoParallaxPass::Initialize SUCCEEDED for size (%u, %u)", curWidth, curHeight);
+#endif
     }
 
     m_impl->UpdateBindGroups();
@@ -512,14 +617,26 @@ void StereoParallaxPass::Render(void* encoderPtr) {
         return;
     }
 
+    float eyeSep = m_eyeSeparation.load(std::memory_order_relaxed);
+    float convDepth = m_convergenceDepth.load(std::memory_order_relaxed);
+    float depthSc = m_depthScale.load(std::memory_order_relaxed);
+
+#if defined(__APPLE__)
+    static uint64_t s_stereoRenderCount = 0;
+    if (++s_stereoRenderCount <= 5 || (s_stereoRenderCount % 60) == 0) {
+        os_log(OS_LOG_DEFAULT, "[DuskStereo] Frame #%llu: eyeSeparation=%.4f, convergenceDepth=%.4f, depthScale=%.4f, size=(%u x %u)",
+               s_stereoRenderCount, eyeSep, convDepth, depthSc, curWidth, curHeight);
+    }
+#endif
+
     auto* cmdEncoder = static_cast<wgpu::CommandEncoder*>(encoderPtr);
 
-    auto renderEye = [&](EyeResources& eye, float eyeSign) {
+    auto renderEye = [&](EyeResources& eye, float eyeSign, AppleReadyFence& readyFence) {
         UniformBufferData uboData{
             .eye_sign = eyeSign,
-            .eye_separation = m_settings.eyeSeparation,
-            .convergence_depth = m_settings.convergenceDepth,
-            .depth_scale = m_settings.depthScale,
+            .eye_separation = eyeSep,
+            .convergence_depth = convDepth,
+            .depth_scale = depthSc,
         };
         m_impl->queue.WriteBuffer(eye.uniformBuffer, 0, &uboData, sizeof(uboData));
 
@@ -527,9 +644,6 @@ void StereoParallaxPass::Render(void* encoderPtr) {
         wgpu::SharedTextureMemoryBeginAccessDescriptor beginDesc{};
         if (eye.colorSharedMem) {
             eye.colorSharedMem.BeginAccess(eye.colorTexture, &beginDesc);
-        }
-        if (eye.depthSharedMem) {
-            eye.depthSharedMem.BeginAccess(eye.depthTexture, &beginDesc);
         }
 #endif
 
@@ -543,7 +657,7 @@ void StereoParallaxPass::Render(void* encoderPtr) {
         depthAttachment.view = eye.depthView;
         depthAttachment.depthLoadOp = wgpu::LoadOp::Clear;
         depthAttachment.depthStoreOp = wgpu::StoreOp::Store;
-        depthAttachment.depthClearValue = 1.0f;
+        depthAttachment.depthClearValue = 0.0f;
 
         wgpu::RenderPassDescriptor passDesc{};
         passDesc.label = "StereoParallax RenderPass";
@@ -563,15 +677,61 @@ void StereoParallaxPass::Render(void* encoderPtr) {
         wgpu::SharedTextureMemoryEndAccessState endState{};
         if (eye.colorSharedMem) {
             eye.colorSharedMem.EndAccess(eye.colorTexture, &endState);
-        }
-        if (eye.depthSharedMem) {
-            eye.depthSharedMem.EndAccess(eye.depthTexture, &endState);
+            if (endState.fenceCount > 0 && endState.signaledValueCount > 0) {
+                wgpu::SharedFenceMTLSharedEventExportInfo metalEventInfo{};
+                wgpu::SharedFenceExportInfo fenceInfo{};
+                fenceInfo.nextInChain = &metalEventInfo;
+                endState.fences[0].ExportInfo(&fenceInfo);
+                if (fenceInfo.type == wgpu::SharedFenceType::MTLSharedEvent && metalEventInfo.sharedEvent) {
+                    readyFence.event = metalEventInfo.sharedEvent;
+                    readyFence.value = endState.signaledValues[0];
+                }
+            }
         }
 #endif
     };
 
-    renderEye(m_impl->leftEye, -1.0f);
-    renderEye(m_impl->rightEye, 1.0f);
+    AppleReadyFence leftReady;
+    AppleReadyFence rightReady;
+    renderEye(m_impl->leftEye, -1.0f, leftReady);
+    renderEye(m_impl->rightEye, 1.0f, rightReady);
+
+#if defined(__APPLE__)
+    if (leftReady.event && rightReady.event && leftReady.value > 0 && rightReady.value > 0) {
+        std::scoped_lock lock(m_appleFrameMutex);
+        m_leftReadyEvent = leftReady.event;
+        m_leftReadyValue = leftReady.value;
+        m_rightReadyEvent = rightReady.event;
+        m_rightReadyValue = rightReady.value;
+        ++m_readyGeneration;
+    }
+#endif
+}
+
+void StereoParallaxPass::AdjustEyeSeparation(float delta) {
+    float cur = m_eyeSeparation.load(std::memory_order_relaxed);
+    float newVal = std::clamp(cur + delta, 0.0f, 0.20f);
+    m_eyeSeparation.store(newVal, std::memory_order_relaxed);
+#if defined(__APPLE__)
+    os_log(OS_LOG_DEFAULT, "[DuskStereo] Adjusted eyeSeparation -> %.4f", newVal);
+#endif
+}
+
+void StereoParallaxPass::AdjustConvergenceDepth(float delta) {
+    float cur = m_convergenceDepth.load(std::memory_order_relaxed);
+    float newVal = std::clamp(cur + delta, 0.0f, 1.0f);
+    m_convergenceDepth.store(newVal, std::memory_order_relaxed);
+#if defined(__APPLE__)
+    os_log(OS_LOG_DEFAULT, "[DuskStereo] Adjusted convergenceDepth -> %.4f", newVal);
+#endif
+}
+
+void StereoParallaxPass::ToggleEnabled() {
+    bool cur = m_enabled.load(std::memory_order_relaxed);
+    m_enabled.store(!cur, std::memory_order_relaxed);
+#if defined(__APPLE__)
+    os_log(OS_LOG_DEFAULT, "[DuskStereo] Parallax enabled -> %d", !cur ? 1 : 0);
+#endif
 }
 
 void InitializeStereoParallaxHook() {

@@ -651,8 +651,15 @@ if (VISIONOS)
         target_compile_options(dusklight_visionos_swift PRIVATE -target ${CMAKE_C_COMPILER_TARGET})
     endif ()
 
-    target_sources(dusklight PRIVATE src/dusk/ios/VisionCompositorRenderer.mm)
-    set_source_files_properties(src/dusk/ios/VisionCompositorRenderer.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
+    target_sources(dusklight PRIVATE
+        src/dusk/ios/VisionCompositorRenderer.mm
+        src/dusk/ios/VisionDioramaAnchor.mm
+    )
+    set_source_files_properties(
+        src/dusk/ios/VisionCompositorRenderer.mm
+        src/dusk/ios/VisionDioramaAnchor.mm
+        PROPERTIES COMPILE_FLAGS -fobjc-arc
+    )
 
     target_link_libraries(dusklight PRIVATE
         dusklight_visionos_swift

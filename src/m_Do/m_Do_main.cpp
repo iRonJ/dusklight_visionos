@@ -71,6 +71,7 @@
 #include <aurora/event.h>
 #include <aurora/main.h>
 #include <aurora/dvd.h>
+#include <aurora/webgpu.hpp>
 #include <dolphin/dvd.h>
 
 #include "SDL3/SDL_init.h"
@@ -87,6 +88,7 @@
 #include "dusk/io.hpp"
 #include "dusk/version.hpp"
 #include "dusk/discord_presence.hpp"
+#include "dusk/gfx/StereoParallax.hpp"
 #include "tracy/Tracy.hpp"
 #include "f_pc/f_pc_draw.h"
 #include "tracy/Tracy.hpp"
@@ -200,9 +202,13 @@ void main01(void) {
     OS_REPORT("\x1b[m");
 
     // 1. Setup
+    DuskLog.info("[VisionBoot] Entering mDoMch_Create");
     mDoMch_Create();
+    DuskLog.info("[VisionBoot] Completed mDoMch_Create; entering mDoGph_Create");
     mDoGph_Create();
+    DuskLog.info("[VisionBoot] Completed mDoGph_Create; entering mDoCPd_c::create");
     mDoCPd_c::create();
+    DuskLog.info("[VisionBoot] Completed mDoCPd_c::create");
 
     // Console Setup
     JUTConsole* console = JFWSystem::getSystemConsole();
@@ -213,16 +219,21 @@ void main01(void) {
     }
 
     // Loader Init
+    DuskLog.info("[VisionBoot] Queueing LOAD_COPYDATE callback");
     mDoDvdThd_callback_c::create((mDoDvdThd_callback_func)LOAD_COPYDATE, NULL);
+    DuskLog.info("[VisionBoot] Queued LOAD_COPYDATE callback; entering fapGm_Create");
 
     OSReport("Calling fapGm_Create()...\n");
     fapGm_Create();
+    DuskLog.info("[VisionBoot] Completed fapGm_Create; entering fopAcM_initManager");
 
     OSReport("Calling fopAcM_initManager()...\n");
     fopAcM_initManager();
+    DuskLog.info("[VisionBoot] Completed fopAcM_initManager; entering cDyl_InitAsync");
 
     OSReport("Calling cDyl_InitAsync()...\n");
     cDyl_InitAsync();
+    DuskLog.info("[VisionBoot] Completed cDyl_InitAsync; creating audio heap");
 
     g_mDoAud_audioHeap = JKRCreateSolidHeap(audioHeapSize, JKRGetCurrentHeap(), false);
     JKRHEAP_NAME(g_mDoAud_audioHeap, "g_mDoAud_audioHeap");
@@ -233,6 +244,7 @@ void main01(void) {
     }
 
     OSReport("Entering Main Loop (main01)...\n");
+    DuskLog.info("[VisionBoot] Entering main01 frame loop");
 
     dusk::game_clock::ensure_initialized();
 
@@ -266,9 +278,17 @@ void main01(void) {
 
         eventsDone:;
 
+        static bool s_loggedFirstBegin = false;
+        if (!s_loggedFirstBegin) {
+            DuskLog.info("[VisionBoot] Calling first aurora_begin_frame");
+        }
         if (!aurora_begin_frame()) {
             DuskLog.debug("aurora_begin_frame returned false, skipping draw this frame");
             continue;
+        }
+        if (!s_loggedFirstBegin) {
+            s_loggedFirstBegin = true;
+            DuskLog.info("[VisionBoot] First aurora_begin_frame succeeded");
         }
 
         VIWaitForRetrace();
@@ -337,6 +357,14 @@ void main01(void) {
 
         aurora_end_frame();
 
+        static uint64_t s_depthProbeFrame = 0;
+        if (++s_depthProbeFrame % 600 == 0) {
+            auto depthView = aurora::webgpu::get_depth_view();
+            uint32_t pw = aurora::webgpu::get_present_width();
+            uint32_t ph = aurora::webgpu::get_present_height();
+            DuskLog.info("[DuskDepthProbe] Frame #{}: Depth buffer valid={}, present size=({}x{})",
+                         s_depthProbeFrame, (depthView != nullptr), pw, ph);
+        }
 
         FrameMark;
 
@@ -576,11 +604,8 @@ int game_main(int argc, char* argv[]) {
         config.windowPosX = -1;
         config.windowPosY = -1;
         config.windowHeight = defaultWindowHeight * 2;
-        // Seed a 64:27 (21:9) window. On iOS/tvOS/visionOS Aurora forces
-        // fullscreen, so this is only the requested size; the real render size
-        // comes from AuroraGetRenderSize().
         config.windowWidth =
-            static_cast<u32>(static_cast<float>(config.windowHeight) * (64.0f / 27.0f));
+            static_cast<u32>(static_cast<float>(config.windowHeight) * (16.0f / 9.0f));
         config.desiredBackend = ResolveDesiredBackend(parsed_arg_options);
         config.logCallback = &aurora_log_callback;
         config.logLevel = startupLogLevel;
@@ -592,6 +617,8 @@ int game_main(int argc, char* argv[]) {
         config.allowTextureReplacements = dusk::getSettings().game.enableTextureReplacements;
         config.allowTextureDumps = false;
         auroraInfo = aurora_initialize(argc, argv, &config);
+        dusk::gfx::InitializeStereoParallaxHook();
+        DuskLog.info("Initialized StereoParallax WebGPU hook with Aurora.");
     }
 
 #ifdef DUSK_DISCORD
@@ -604,17 +631,11 @@ int game_main(int argc, char* argv[]) {
         fmt::format("Dusklight {} [{}]", DUSK_WC_DESCRIBE, dusk::backend_name(auroraInfo.backend))
         .c_str());
 
-#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
-    // visionOS pins a fixed 64:27 (21:9) content frame (see updateRenderSize()),
-    // so Aurora must always letterbox/pillarbox it into the real display.
-    AuroraSetViewportPolicy(AURORA_VIEWPORT_FIT);
-#else
     if (dusk::getSettings().video.lockAspectRatio) {
         AuroraSetViewportPolicy(AURORA_VIEWPORT_FIT);
     } else {
         AuroraSetViewportPolicy(AURORA_VIEWPORT_STRETCH);
     }
-#endif
     VISetFrameBufferScale(dusk::getSettings().game.internalResolutionScale.getValue());
     switch (dusk::getSettings().game.resampler.getValue()) {
     case dusk::Resampler::Area:
@@ -670,21 +691,18 @@ int game_main(int argc, char* argv[]) {
     bool dvd_opened = false;
     if (parsed_arg_options.count("dvd")) {
         dvd_path = parsed_arg_options["dvd"].as<std::string>();
-        if (dusk::iso::inspect(dvd_path.c_str(), discInfo) == dusk::iso::ValidationError::Success) {
-            DuskLog.info("Loading DVD image from command line: {}", dvd_path);
-            dvd_opened = aurora_dvd_open(dvd_path.c_str());
-            if (!dvd_opened) {
-                DuskLog.warn("Failed to open DVD image from command line: {}, opening prelaunch UI", dvd_path);
-                forcePreLaunchUI = true;
-            } else {
-                dusk::getSettings().backend.isoPath.setValue(dvd_path);
-                dusk::getSettings().backend.isoVerification.setValue(
-                    dusk::DiscVerificationState::Unknown);
-                dusk::config::Save();
-                dusk::IsGameLaunched = true;
-            }
+        auto valErr = dusk::iso::inspect(dvd_path.c_str(), discInfo);
+        DuskLog.info("inspect result for DVD '{}': {}", dvd_path, (int)valErr);
+        dvd_opened = aurora_dvd_open(dvd_path.c_str());
+        if (dvd_opened) {
+            DuskLog.info("aurora_dvd_open succeeded for: {}", dvd_path);
+            dusk::getSettings().backend.isoPath.setValue(dvd_path);
+            dusk::getSettings().backend.isoVerification.setValue(
+                dusk::DiscVerificationState::Unknown);
+            dusk::config::Save();
+            dusk::IsGameLaunched = true;
         } else {
-            DuskLog.warn("DVD image from command line failed validation: {}, opening prelaunch UI", dvd_path);
+            DuskLog.warn("Failed to open DVD image from command line: {}, opening prelaunch UI", dvd_path);
             forcePreLaunchUI = true;
         }
     }
@@ -694,7 +712,45 @@ int game_main(int argc, char* argv[]) {
         dusk::getSettings().backend.isoVerification.getValue());
 
     if (!dvd_opened) {
+#if defined(__APPLE__)
         if (dusk::getSettings().backend.isoPath.getValue().empty()) {
+            // Auto-search app Documents folder
+            char* prefPath = SDL_GetPrefPath("Twilit Realm", "Dusklight");
+            std::vector<std::filesystem::path> searchDirs;
+            if (prefPath) {
+                searchDirs.emplace_back(prefPath);
+                SDL_free(prefPath);
+            }
+            if (const char* home = std::getenv("HOME")) {
+                searchDirs.emplace_back(std::filesystem::path(home) / "Documents");
+            }
+            for (const auto& dir : searchDirs) {
+                if (std::filesystem::exists(dir)) {
+                    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+                        auto ext = entry.path().extension().string();
+                        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                        if (ext == ".rvz" || ext == ".iso" || ext == ".gcm" || ext == ".ciso") {
+                            auto cand = entry.path().string();
+                            if (dusk::iso::inspect(cand.c_str(), discInfo) == dusk::iso::ValidationError::Success) {
+                                DuskLog.info("Auto-discovered valid DVD image in Documents: {}", cand);
+                                if (aurora_dvd_open(cand.c_str())) {
+                                    dvd_opened = true;
+                                    dvd_path = cand;
+                                    dusk::getSettings().backend.isoPath.setValue(cand);
+                                    dusk::config::Save();
+                                    forcePreLaunchUI = false;
+                                    dusk::IsGameLaunched = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (dvd_opened) break;
+            }
+        }
+#endif
+        if (!dvd_opened && dusk::getSettings().backend.isoPath.getValue().empty()) {
             forcePreLaunchUI = true;
         }
         if (forcePreLaunchUI && dusk::getSettings().backend.skipPreLaunchUI.getValue()) {

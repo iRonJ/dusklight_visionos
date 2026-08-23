@@ -8,11 +8,12 @@ struct DusklightCompositorConfig: CompositorLayerConfiguration {
         configuration.depthFormat = .depth32Float
         configuration.colorFormat = .bgra8Unorm_srgb
 
-        let foveationEnabled = capabilities.supportsFoveation
-        configuration.isFoveationEnabled = foveationEnabled
+        // Keep bring-up output spatially linear. Applying the drawable's
+        // foveation map with the current explicit per-eye passes warps eye 1
+        // as the user's gaze moves.
+        configuration.isFoveationEnabled = false
 
-        let options: LayerRenderer.Capabilities.SupportedLayoutsOptions = foveationEnabled ? [.foveationEnabled] : []
-        let supportedLayouts = capabilities.supportedLayouts(options: options)
+        let supportedLayouts = capabilities.supportedLayouts(options: [])
 
         configuration.layout = supportedLayouts.contains(.layered) ? .layered : .dedicated
     }
