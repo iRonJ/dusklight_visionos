@@ -225,6 +225,7 @@ int DuskMain(int argc, char* argv[]) {
 #endif
 
 #if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+#define SDL_MAIN_HANDLED
 #include <SDL3/SDL_main.h>
 
 extern "C" void dusklight_start_game_thread() {
