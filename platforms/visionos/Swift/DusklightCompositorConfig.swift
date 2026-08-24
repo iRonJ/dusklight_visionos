@@ -16,7 +16,7 @@ struct DusklightCompositorConfig: CompositorLayerConfiguration {
 
         if capabilities.supportedTrackingAreasFormats.contains(.r16Uint) {
             configuration.trackingAreasFormat = .r16Uint
-            configuration.trackingAreasUsage = .renderTarget
+            configuration.trackingAreasUsage = [.renderTarget, .shaderRead]
         }
 
         let supportedLayouts = capabilities.supportedLayouts(options: [])

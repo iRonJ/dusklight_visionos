@@ -398,22 +398,34 @@ DioramaPlacement CurrentDioramaPlacement() {
     cp_frame_t frame = cp_layer_renderer_query_next_frame(_layerRenderer);
     if (!frame) return NO;
 
-    cp_frame_timing_t timing = cp_frame_predict_timing(frame);
-    if (!timing) return NO;
-
     cp_frame_start_update(frame);
     cp_frame_end_update(frame);
+
+    cp_frame_timing_t timing = cp_frame_predict_timing(frame);
+    if (!timing) return NO;
 
     cp_time_t optimalInputTime = cp_frame_timing_get_optimal_input_time(timing);
     cp_time_wait_until(optimalInputTime);
 
-    // The drawable must be queried inside the submission phase
-    cp_frame_start_submission(frame);
-    cp_drawable_t drawable = cp_frame_query_drawable(frame);
-    if (!drawable) {
-        cp_frame_end_submission(frame);
-        return NO;
+    // visionOS 26 returns an array because a frame may contain separate
+    // headset and capture targets. Query it before starting submission, as
+    // required by the current Compositor Services frame contract.
+    cp_drawable_array_t drawables = cp_frame_query_drawables(frame);
+    if (!drawables) return NO;
+    const size_t drawableCount = cp_drawable_array_get_count(drawables);
+    if (drawableCount == 0) return NO;
+
+    cp_drawable_t drawable = cp_drawable_array_get_drawable(drawables, 0);
+    for (size_t index = 0; index < drawableCount; ++index) {
+        cp_drawable_t candidate = cp_drawable_array_get_drawable(drawables, index);
+        if (candidate && cp_drawable_get_target(candidate) == cp_drawable_target_built_in) {
+            drawable = candidate;
+            break;
+        }
     }
+    if (!drawable) return NO;
+
+    cp_frame_start_submission(frame);
 
     // Query head pose from ARKit at the predicted presentation timestamp
     simd_float4x4 originFromDevice = matrix_identity_float4x4;
