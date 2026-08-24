@@ -164,6 +164,17 @@ struct FragmentOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> FragmentOutput {
+    // True stereo already supplies a complete GX render for each eye. In that
+    // mode eye separation is zero, so inverse reprojection cannot move a pixel
+    // and only wastes many depth fetches reproducing the input image.
+    if (abs(uniforms.eye_separation) <= 0.000001) {
+        var out: FragmentOutput;
+        let game_color = textureSample(color_texture, color_sampler, in.uv);
+        out.color = vec4<f32>(game_color.rgb, 1.0);
+        out.depth = textureSampleLevel(depth_texture, depth_sampler, in.uv, 0i);
+        return out;
+    }
+
     let near_solution = solve_source(in.uv, 0.0);
     let middle_solution = solve_source(in.uv, 0.5);
     let far_solution = solve_source(in.uv, 1.0);

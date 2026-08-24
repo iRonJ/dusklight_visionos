@@ -35,13 +35,28 @@ This is not spatial video and does not use AVKit stereo-buffer tags. It is also 
 a single-image depth reprojection renderer. The WGSL depth-warp implementation remains as a
 fallback when a complete dual-eye capture cannot be produced.
 
-### Current head-tracking boundary
+### Bounded head-tracked camera
 
-ARKit head pose currently keeps the diorama quad stable in world space and gives Compositor
-Services a device anchor for late reprojection. The current shipping renderer does **not** feed
-head translation or rotation back into the GX game camera, so leaning around the opening does not
-reveal geometry that was outside the two game-camera views. Binocular depth is real, but internal
-scene parallax is still governed by the game's camera and the stereo eye offset.
+ARKit head pose keeps the diorama quad stable in world space and gives Compositor Services a device
+anchor for late reprojection. On the `visionos-limited-6dof` branch, the compositor also publishes
+the device transform relative to the current diorama anchor. The GX renderer maps that relative
+translation and orientation into the game's presentation-camera basis before applying the left and
+right eye offsets.
+
+For comfort, this is deliberately not an unrestricted VR camera:
+
+- Translation is radially limited to 0.3048 m (one foot) from the anchor reference.
+- Rotation is limited to a 15-degree shortest-arc cone around the anchor orientation.
+- Response is 1:1 through 75% of each range, then enters a cubic Hermite shoulder and reaches the
+  hard cap with zero slope at 125% physical input.
+- A frame-rate-independent 55 ms low-pass filter suppresses ARKit sample jitter before limiting.
+- Tracking loss, recenter, app stop, and scene transitions reset the filtered pose to neutral. A
+  recovered pose eases in instead of applying a stale accumulated delta in one frame.
+
+The pose changes only the presentation camera; it does not mutate simulation or the game's saved
+camera. The original matrices are restored after both eye captures. The physical compositor depth
+is still the flat quad, so this bounded camera can reveal more of the in-game view but does not make
+the game world independently occlude other visionOS content at per-pixel depth.
 
 ## Application and thread model
 
@@ -92,13 +107,15 @@ interpolated presentation path in `src/m_Do/m_Do_main.cpp`.
 For each displayed game frame it:
 
 1. Saves every camera matrix and the `lookat_class` state from the game camera.
-2. Starts a tagged Aurora capture for the left eye.
-3. Translates the camera along its local right vector and adds an opposite horizontal projection
+2. Applies the filtered and bounded anchor-relative head pose to a temporary presentation camera.
+3. Starts a tagged Aurora capture for the left eye.
+4. Translates the camera along its local right vector and adds an opposite horizontal projection
    offset.
-4. Re-runs the camera-dependent actor draw traversal and the GX painter.
-5. Ends the capture and restores the center camera.
-6. Repeats the same work for the right eye without advancing UI animation state a second time.
-7. Restores the original camera and submits the coherent capture pair to `StereoParallaxPass`.
+5. Re-runs the camera-dependent actor draw traversal and the GX painter.
+6. Ends the capture and restores the tracked center camera.
+7. Repeats the same work for the right eye without advancing UI animation state a second time.
+8. Restores the game's original camera and submits the coherent capture pair to
+   `StereoParallaxPass`.
 
 The cameras are parallel; they are never toed inward. For a camera offset `e`, projection scale
 `Pxx`, and convergence distance `c`, the horizontal projection term is adjusted by:

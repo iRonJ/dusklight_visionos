@@ -74,6 +74,34 @@ DioramaPlacement CurrentDioramaPlacement() {
         }
     }
 }
+
+void PublishRelativeHeadPose(simd_float4x4 referenceFromOrigin,
+                             simd_float4x4 originFromDevice) {
+    const simd_float4x4 referenceFromDevice =
+        simd_mul(referenceFromOrigin, originFromDevice);
+    simd_float3x3 rotation;
+    rotation.columns[0] = simd_make_float3(referenceFromDevice.columns[0].x,
+                                           referenceFromDevice.columns[0].y,
+                                           referenceFromDevice.columns[0].z);
+    rotation.columns[1] = simd_make_float3(referenceFromDevice.columns[1].x,
+                                           referenceFromDevice.columns[1].y,
+                                           referenceFromDevice.columns[1].z);
+    rotation.columns[2] = simd_make_float3(referenceFromDevice.columns[2].x,
+                                           referenceFromDevice.columns[2].y,
+                                           referenceFromDevice.columns[2].z);
+    const simd_quatf orientation = simd_quaternion(rotation);
+
+    dusk::gfx::PublishVisionHeadPose({
+        .translationX = referenceFromDevice.columns[3].x,
+        .translationY = referenceFromDevice.columns[3].y,
+        .translationZ = referenceFromDevice.columns[3].z,
+        .rotationX = orientation.vector.x,
+        .rotationY = orientation.vector.y,
+        .rotationZ = orientation.vector.z,
+        .rotationW = orientation.vector.w,
+        .valid = true,
+    });
+}
 } // namespace
 
 @interface DusklightVisionRendererHost : NSObject
@@ -116,9 +144,11 @@ DioramaPlacement CurrentDioramaPlacement() {
     std::atomic<bool> _running;
 
     BOOL _hasAnchoredInitialPosition;
+    BOOL _trackingLossHandled;
     BOOL _loggedDiagnosticSource;
     BOOL _loggedGameSource;
     simd_float4x4 _anchorReferenceMatrix;
+    simd_float4x4 _referenceFromOriginMatrix;
     uint64_t _lastRecenterGeneration;
 }
 
@@ -134,10 +164,14 @@ DioramaPlacement CurrentDioramaPlacement() {
         _pipelineTrackingFormat = MTLPixelFormatInvalid;
         _hasAnchoredInitialPosition =
             g_hasDioramaAnchorReference.load(std::memory_order_acquire);
+        _trackingLossHandled = NO;
         _loggedDiagnosticSource = NO;
         _loggedGameSource = NO;
         _anchorReferenceMatrix = _hasAnchoredInitialPosition
             ? g_dioramaAnchorReference
+            : matrix_identity_float4x4;
+        _referenceFromOriginMatrix = _hasAnchoredInitialPosition
+            ? simd_inverse(_anchorReferenceMatrix)
             : matrix_identity_float4x4;
         _lastRecenterGeneration = g_dioramaRecenterGeneration.load(std::memory_order_acquire);
 
@@ -476,6 +510,7 @@ DioramaPlacement CurrentDioramaPlacement() {
             // Preserve the initial head orientation as well as position so the
             // flat diorama is perpendicular to the user's gaze, not world axes.
             _anchorReferenceMatrix = originFromDevice;
+            _referenceFromOriginMatrix = simd_inverse(_anchorReferenceMatrix);
             g_dioramaAnchorReference = _anchorReferenceMatrix;
             g_hasDioramaAnchorReference.store(true, std::memory_order_release);
             simd_float4x4 initialModel =
@@ -486,12 +521,33 @@ DioramaPlacement CurrentDioramaPlacement() {
             os_log(OS_LOG_DEFAULT, "[Dusklight] Anchored 3D diorama window in world space at (%.2f, %.2f, %.2f)",
                    targetPos.x, targetPos.y, targetPos.z);
         }
+
+        // Recenter can be requested from the companion-window thread while a
+        // compositor frame is in flight. Do not republish a pose relative to
+        // the old anchor after that request; the next frame will reanchor.
+        if (g_dioramaRecenterGeneration.load(std::memory_order_acquire) ==
+            _lastRecenterGeneration) {
+            PublishRelativeHeadPose(_referenceFromOriginMatrix, originFromDevice);
+            if (g_dioramaRecenterGeneration.load(std::memory_order_acquire) ==
+                _lastRecenterGeneration) {
+                _trackingLossHandled = NO;
+            } else {
+                dusk::gfx::ResetVisionHeadPose();
+                _hasAnchoredInitialPosition = NO;
+            }
+        } else {
+            _hasAnchoredInitialPosition = NO;
+        }
     }
 
     if (!hasPose) {
         // Once submission has started, xrOS requires the queried drawable to
         // be presented. Tracking commonly disappears briefly while Home View
         // or a system message interrupts the immersive space.
+        if (!_trackingLossHandled) {
+            dusk::gfx::ResetVisionHeadPose();
+            _trackingLossHandled = YES;
+        }
         [self presentClearedDrawable:drawable];
         cp_frame_end_submission(frame);
         return YES;
@@ -792,6 +848,7 @@ void dusklight_visionos_stop(void) {
     [g_sharedDioramaAnchor stop];
     g_sharedDioramaAnchor = nil;
     g_hasDioramaAnchorReference.store(false, std::memory_order_release);
+    dusk::gfx::ResetVisionHeadPose();
 }
 
 void dusklight_visionos_set_app_active(bool active) {
@@ -832,6 +889,7 @@ void dusklight_visionos_recenter_diorama(void) {
     g_dioramaPlacementSequence.fetch_add(1, std::memory_order_release);
     g_hasDioramaAnchorReference.store(false, std::memory_order_release);
     g_dioramaRecenterGeneration.fetch_add(1, std::memory_order_acq_rel);
+    dusk::gfx::ResetVisionHeadPose();
 }
 
 float dusklight_visionos_get_diorama_aspect_ratio(void) {

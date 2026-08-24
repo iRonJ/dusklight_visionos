@@ -2,6 +2,17 @@
 
 namespace dusk::gfx {
 
+struct VisionHeadPose {
+    float translationX = 0.0f;
+    float translationY = 0.0f;
+    float translationZ = 0.0f;
+    float rotationX = 0.0f;
+    float rotationY = 0.0f;
+    float rotationZ = 0.0f;
+    float rotationW = 1.0f;
+    bool valid = false;
+};
+
 // Draws the current scene into independent left/right Aurora targets. Returns
 // false when no active 3D view is available so the caller can use the normal
 // center-eye path (title screens, loading, and other 2D-only states).
@@ -19,5 +30,11 @@ void RegisterVisionCompositor(const void* token);
 void SetVisionCompositorRunning(const void* token, bool running);
 void SetVisionAppActive(bool active);
 bool IsVisionCompositorRunning();
+
+// Publishes the latest device pose relative to the diorama's anchor reference.
+// The compositor thread writes it and the game render thread consumes a coherent
+// snapshot. The renderer applies its own comfort limits before changing a camera.
+void PublishVisionHeadPose(const VisionHeadPose& pose);
+void ResetVisionHeadPose();
 
 } // namespace dusk::gfx
