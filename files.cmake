@@ -1529,6 +1529,8 @@ set(DUSK_FILES
         src/dusk/action_bindings.cpp
         src/dusk/gfx/StereoParallax.hpp
         src/dusk/gfx/StereoParallax.cpp
+        src/dusk/gfx/VisionStereoRenderer.hpp
+        src/dusk/gfx/VisionStereoRenderer.cpp
 )
 
 set(DUSK_HTTP_BACKEND_FILES

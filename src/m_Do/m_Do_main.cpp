@@ -43,6 +43,7 @@
 #include "SSystem/SComponent/c_counter.h"
 #include <cstring>
 
+#include <chrono>
 #include <filesystem>
 #include <system_error>
 #include <thread>
@@ -89,6 +90,7 @@
 #include "dusk/version.hpp"
 #include "dusk/discord_presence.hpp"
 #include "dusk/gfx/StereoParallax.hpp"
+#include "dusk/gfx/VisionStereoRenderer.hpp"
 #include "tracy/Tracy.hpp"
 #include "f_pc/f_pc_draw.h"
 #include "tracy/Tracy.hpp"
@@ -270,13 +272,41 @@ void main01(void) {
                 dusk::ImGuiEngine_Initialize(event->windowSize.scale);
                 break;
             case AURORA_EXIT:
+#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
+                // UIKit can tear down and recreate the immersive scene for a
+                // notification or system UI transition. The process and game
+                // session remain valid, so do not turn that scene event into
+                // a permanent exit of the detached engine thread.
+                DuskLog.info("[Dusklight] Ignoring scene-level exit event on visionOS");
+                break;
+#else
                 goto exit;
+#endif
             }
 
             event++;
         }
 
         eventsDone:;
+
+#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
+        const bool compositorRunning = dusk::gfx::IsVisionCompositorRunning();
+        static bool s_compositorWasRunning = true;
+        if (compositorRunning != s_compositorWasRunning) {
+            s_compositorWasRunning = compositorRunning;
+            dusk::audio::SetPaused(!compositorRunning);
+            if (compositorRunning) {
+                dusk::game_clock::reset_frame_timer();
+            }
+            DuskLog.info("[Dusklight] Compositor {}: game session {}",
+                         compositorRunning ? "resumed" : "paused",
+                         compositorRunning ? "continuing" : "preserved");
+        }
+        if (!compositorRunning) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+#endif
 
         static bool s_loggedFirstBegin = false;
         if (!s_loggedFirstBegin) {
@@ -319,8 +349,10 @@ void main01(void) {
             dusk::frame_interp::interpolate();
             dusk::frame_interp::begin_presentation_camera();
             // run draw functions for anything specially marked to handle interp
-            fpcM_DrawIterater((fpcM_DrawIteraterFunc)fpcM_Draw);
-            cAPIGph_Painter();
+            if (!dusk::gfx::RenderVisionStereoFrame()) {
+                fpcM_DrawIterater((fpcM_DrawIteraterFunc)fpcM_Draw);
+                cAPIGph_Painter();
+            }
             dusk::frame_interp::end_presentation_camera();
             dusk::frame_interp::set_ui_tick_pending(false);
         } else {

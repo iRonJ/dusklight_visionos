@@ -5,6 +5,8 @@
 #include <memory>
 #include <mutex>
 
+#include <aurora/gfx.hpp>
+
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOSurface/IOSurfaceRef.h>
@@ -49,6 +51,8 @@ public:
     void Resize(uint32_t width, uint32_t height);
 
     void Render(void* encoderPtr);
+    void SubmitTrueStereoFrame(const aurora::gfx::CapturedFrame& left,
+                               const aurora::gfx::CapturedFrame& right);
 
     void SetSettings(const StereoParallaxSettings& settings) {
         m_eyeSeparation.store(settings.eyeSeparation, std::memory_order_relaxed);

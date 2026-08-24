@@ -13,6 +13,7 @@
 #include <aurora/webgpu.hpp>
 
 #include "dusk/gfx/StereoParallax.hpp"
+#include "dusk/gfx/VisionStereoRenderer.hpp"
 #include "dusk/ios/VisionDioramaAnchor.h"
 #include "dusk/ios/VisionDioramaShaders.h"
 
@@ -32,7 +33,10 @@ using dusk::vision::MatrixTranslation;
 
 - (instancetype)initWithLayerRenderer:(cp_layer_renderer_t)layerRenderer;
 - (void)start;
+- (void)requestStop;
 - (void)stop;
+- (BOOL)isRunning;
+- (BOOL)usesLayerRenderer:(cp_layer_renderer_t)layerRenderer;
 
 @end
 
@@ -195,22 +199,40 @@ using dusk::vision::MatrixTranslation;
 
 - (void)start {
     if (_running.load()) return;
+    if (_renderThread.joinable()) {
+        _renderThread.join();
+        _anchor = [[DusklightDioramaAnchor alloc] init];
+    }
     _running.store(true);
     _renderThread = std::thread([self]() {
         [self renderLoop];
     });
 }
 
-- (void)stop {
+- (void)requestStop {
     _running.store(false);
+}
+
+- (void)stop {
+    [self requestStop];
     if (_renderThread.joinable()) {
         _renderThread.join();
     }
     [_anchor stop];
 }
 
+- (BOOL)isRunning {
+    return _running.load();
+}
+
+- (BOOL)usesLayerRenderer:(cp_layer_renderer_t)layerRenderer {
+    return _layerRenderer == layerRenderer;
+}
+
 - (void)renderLoop {
     pthread_setname_np("Dusklight.VisionRenderThread");
+    const void* compositorToken = (__bridge const void*)_layerRenderer;
+    dusk::gfx::SetVisionCompositorRunning(compositorToken, false);
 
     while (_running.load() && !_anchor.isTracking) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -222,11 +244,15 @@ using dusk::vision::MatrixTranslation;
     while (_running.load()) {
         cp_layer_renderer_state state = cp_layer_renderer_get_state(_layerRenderer);
         if (state == cp_layer_renderer_state_invalidated) {
+            dusk::gfx::SetVisionCompositorRunning(compositorToken, false);
             break;
         } else if (state == cp_layer_renderer_state_paused) {
+            dusk::gfx::SetVisionCompositorRunning(compositorToken, false);
             cp_layer_renderer_wait_until_running(_layerRenderer);
             continue;
         }
+
+        dusk::gfx::SetVisionCompositorRunning(compositorToken, true);
 
         @autoreleasepool {
             BOOL hadFrame = [self renderFrame];
@@ -235,6 +261,11 @@ using dusk::vision::MatrixTranslation;
             }
         }
     }
+
+    _running.store(false);
+    dusk::gfx::SetVisionCompositorRunning(compositorToken, false);
+    [_anchor stop];
+    os_log(OS_LOG_DEFAULT, "[Dusklight] VisionCompositorRenderer frame loop stopped");
 }
 
 - (id<MTLTexture>)metalTextureForIOSurface:(IOSurfaceRef)surface
@@ -558,11 +589,25 @@ using dusk::vision::MatrixTranslation;
 static DusklightVisionRendererHost* g_visionHost = nil;
 
 void dusklight_visionos_start(cp_layer_renderer_t layerRenderer) {
-    if (!g_visionHost) {
-        g_visionHost = [[DusklightVisionRendererHost alloc] initWithLayerRenderer:layerRenderer];
+    if (g_visionHost && [g_visionHost usesLayerRenderer:layerRenderer]) {
         [g_visionHost start];
-        os_log(OS_LOG_DEFAULT, "[Dusklight] VisionCompositorRenderer started");
+        return;
     }
+
+    if (g_visionHost) {
+        // visionOS may invalidate the compositor layer while presenting a
+        // system interruption, then provide a new layer when the immersive
+        // space resumes. Do not block here waiting on a paused old layer;
+        // request its loop to stop and attach the replacement immediately.
+        [g_visionHost requestStop];
+        os_log(OS_LOG_DEFAULT,
+               "[Dusklight] Replacing invalidated compositor layer; game engine remains running");
+    }
+
+    dusk::gfx::RegisterVisionCompositor((__bridge const void*)layerRenderer);
+    g_visionHost = [[DusklightVisionRendererHost alloc] initWithLayerRenderer:layerRenderer];
+    [g_visionHost start];
+    os_log(OS_LOG_DEFAULT, "[Dusklight] VisionCompositorRenderer started");
 }
 
 void dusklight_visionos_stop(void) {

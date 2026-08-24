@@ -248,6 +248,9 @@ struct StereoParallaxPass::Impl {
 
     EyeResources leftEye;
     EyeResources rightEye;
+    aurora::gfx::CapturedFrame leftCapture;
+    aurora::gfx::CapturedFrame rightCapture;
+    bool hasTrueStereoFrame = false;
 
     bool resourcesReady = false;
 
@@ -426,7 +429,8 @@ struct StereoParallaxPass::Impl {
 
             wgpu::TextureDescriptor colorTexDesc{};
             colorTexDesc.label = "StereoParallax Color Texture";
-            colorTexDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+            colorTexDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
+                                 wgpu::TextureUsage::CopyDst;
             colorTexDesc.size = { width, height, 1 };
             colorTexDesc.format = wgpu::TextureFormat::BGRA8Unorm;
             eye.colorTexture = eye.colorSharedMem.CreateTexture(&colorTexDesc);
@@ -437,7 +441,8 @@ struct StereoParallaxPass::Impl {
         if (!eye.colorTexture) {
             wgpu::TextureDescriptor colorTexDesc{};
             colorTexDesc.label = "StereoParallax Fallback Color Texture";
-            colorTexDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding;
+            colorTexDesc.usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding |
+                                 wgpu::TextureUsage::CopyDst;
             colorTexDesc.size = { width, height, 1 };
             colorTexDesc.format = wgpu::TextureFormat::BGRA8Unorm;
             eye.colorTexture = device.CreateTexture(&colorTexDesc);
@@ -453,17 +458,22 @@ struct StereoParallaxPass::Impl {
         eye.depthView = eye.depthTexture.CreateView();
     }
 
-    void UpdateBindGroups() {
-        auto colorView = aurora::webgpu::get_present_source_view();
+    void UpdateBindGroups(bool useTrueStereo) {
+        auto leftColorView = useTrueStereo ? leftCapture.colorView
+                                           : aurora::webgpu::get_present_source_view();
+        auto rightColorView = useTrueStereo ? rightCapture.colorView : leftColorView;
         auto colorSampler = aurora::webgpu::get_present_sampler();
-        auto depthView = aurora::webgpu::get_depth_view();
+        auto leftDepthView = useTrueStereo ? leftCapture.depthView
+                                           : aurora::webgpu::get_depth_view();
+        auto rightDepthView = useTrueStereo ? rightCapture.depthView : leftDepthView;
         auto depthSampler = depthNearestSampler;
 
-        if (!colorView || !depthView) {
+        if (!leftColorView || !rightColorView || !leftDepthView || !rightDepthView) {
             return;
         }
 
-        auto createBg = [&](EyeResources& eye) {
+        auto createBg = [&](EyeResources& eye, const wgpu::TextureView& colorView,
+                            const wgpu::TextureView& depthView) {
             std::vector<wgpu::BindGroupEntry> bgEntries(5);
             bgEntries[0].binding = 0;
             bgEntries[0].buffer = eye.uniformBuffer;
@@ -489,8 +499,8 @@ struct StereoParallaxPass::Impl {
             eye.bindGroup = device.CreateBindGroup(&bgDesc);
         };
 
-        createBg(leftEye);
-        createBg(rightEye);
+        createBg(leftEye, leftColorView, leftDepthView);
+        createBg(rightEye, rightColorView, rightDepthView);
     }
 };
 
@@ -548,6 +558,9 @@ void StereoParallaxPass::Shutdown() {
     m_impl->pipeline = {};
     m_impl->bindGroupLayout = {};
     m_impl->depthNearestSampler = {};
+    m_impl->leftCapture = {};
+    m_impl->rightCapture = {};
+    m_impl->hasTrueStereoFrame = false;
     m_impl->resourcesReady = false;
 
 #if defined(__APPLE__)
@@ -585,6 +598,19 @@ void StereoParallaxPass::Resize(uint32_t width, uint32_t height) {
     Initialize(width, height);
 }
 
+void StereoParallaxPass::SubmitTrueStereoFrame(const aurora::gfx::CapturedFrame& left,
+                                                const aurora::gfx::CapturedFrame& right) {
+    if (!left.colorTexture || !left.colorView || !left.depthView ||
+        !right.colorTexture || !right.colorView || !right.depthView ||
+        left.width == 0 || left.height == 0 ||
+        left.width != right.width || left.height != right.height) {
+        return;
+    }
+    m_impl->leftCapture = left;
+    m_impl->rightCapture = right;
+    m_impl->hasTrueStereoFrame = true;
+}
+
 void StereoParallaxPass::Render(void* encoderPtr) {
     if (!m_enabled.load(std::memory_order_relaxed) || !encoderPtr) {
         return;
@@ -608,7 +634,9 @@ void StereoParallaxPass::Render(void* encoderPtr) {
 #endif
     }
 
-    m_impl->UpdateBindGroups();
+    const bool useTrueStereo = m_impl->hasTrueStereoFrame &&
+        m_impl->leftCapture.width == curWidth && m_impl->leftCapture.height == curHeight;
+    m_impl->UpdateBindGroups(useTrueStereo);
 
     if (!m_impl->pipeline || !m_impl->vertexBuffer || !m_impl->indexBuffer ||
         !m_impl->leftEye.bindGroup || !m_impl->rightEye.bindGroup ||
@@ -617,15 +645,16 @@ void StereoParallaxPass::Render(void* encoderPtr) {
         return;
     }
 
-    float eyeSep = m_eyeSeparation.load(std::memory_order_relaxed);
+    float eyeSep = useTrueStereo ? 0.0f : m_eyeSeparation.load(std::memory_order_relaxed);
     float convDepth = m_convergenceDepth.load(std::memory_order_relaxed);
     float depthSc = m_depthScale.load(std::memory_order_relaxed);
 
 #if defined(__APPLE__)
     static uint64_t s_stereoRenderCount = 0;
     if (++s_stereoRenderCount <= 5 || (s_stereoRenderCount % 60) == 0) {
-        os_log(OS_LOG_DEFAULT, "[DuskStereo] Frame #%llu: eyeSeparation=%.4f, convergenceDepth=%.4f, depthScale=%.4f, size=(%u x %u)",
-               s_stereoRenderCount, eyeSep, convDepth, depthSc, curWidth, curHeight);
+        os_log(OS_LOG_DEFAULT, "[DuskStereo] Frame #%llu: mode=%{public}s eyeSeparation=%.4f, convergenceDepth=%.4f, depthScale=%.4f, size=(%u x %u)",
+               s_stereoRenderCount, useTrueStereo ? "dual-draw" : "depth-warp",
+               eyeSep, convDepth, depthSc, curWidth, curHeight);
     }
 #endif
 
@@ -695,6 +724,7 @@ void StereoParallaxPass::Render(void* encoderPtr) {
     AppleReadyFence rightReady;
     renderEye(m_impl->leftEye, -1.0f, leftReady);
     renderEye(m_impl->rightEye, 1.0f, rightReady);
+    m_impl->hasTrueStereoFrame = false;
 
 #if defined(__APPLE__)
     if (leftReady.event && rightReady.event && leftReady.value > 0 && rightReady.value > 0) {
