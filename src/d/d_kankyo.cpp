@@ -11430,6 +11430,10 @@ void dKy_bg_MAxx_proc(void* bg_model_p) {
                             #if WIDESCREEN_SUPPORT
                             mDoGph_gInf_c::setWideZoomLightProjection(sp1D8);
                             #endif
+                            #if TARGET_PC
+                            mDoGph_gInf_c::setStereoLightProjection(
+                                sp1D8, mat_name[6] == '2' ? 1.0f : 0.49f);
+                            #endif
                             tex_mtx_inf->setEffectMtx(sp1D8);
                             modelData->simpleCalcMaterial((MtxP)j3dDefaultMtx);
                         }

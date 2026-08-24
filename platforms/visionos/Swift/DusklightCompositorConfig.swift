@@ -9,9 +9,9 @@ struct DusklightCompositorConfig: CompositorLayerConfiguration {
         configuration.depthFormat = .depth32Float
         configuration.colorFormat = .bgra8Unorm_srgb
 
-        // Keep bring-up output spatially linear. Applying the drawable's
-        // foveation map with the current explicit per-eye passes warps eye 1
-        // as the user's gaze moves.
+        // The compositor's foveation map produces an asymmetric curl in the
+        // explicit right-eye pass. Keep projection spatially linear and gain
+        // resolution by supersampling the game-owned eye targets instead.
         configuration.isFoveationEnabled = false
 
         if capabilities.supportedTrackingAreasFormats.contains(.r16Uint) {

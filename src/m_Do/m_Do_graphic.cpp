@@ -60,6 +60,7 @@
 #include "dusk/dusk.h"
 #include "dusk/endian.h"
 #include "dusk/frame_interpolation.h"
+#include "dusk/gfx/VisionStereoRenderer.hpp"
 #include "dusk/gx_helper.h"
 #include "dusk/imgui/ImGuiConsole.hpp"
 #include "dusk/logging.h"
@@ -726,6 +727,10 @@ void mDoGph_gInf_c::setWideZoomLightProjection(Mtx& m) {
 #endif
 
 #if TARGET_PC
+void mDoGph_gInf_c::setStereoLightProjection(Mtx& m, f32 horizontalScale) {
+    m[0][2] += horizontalScale * dusk::gfx::GetVisionStereoProjectionShift();
+}
+
 f32 mDoGph_gInf_c::hudAspectScaleDown = 1.0f;
 f32 mDoGph_gInf_c::hudAspectScaleUp = 1.0f;
 f32 mDoGph_gInf_c::m_safeMinXF = 0.0f;

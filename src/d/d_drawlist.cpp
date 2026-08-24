@@ -1569,8 +1569,15 @@ void dDlst_shadowControl_c::imageDraw(Mtx param_0) {
                 r27 = GXGetTexObjWidth(&mShadowTexObj[tex]);
                 r26 = r27 * 2;
 #ifdef TARGET_PC
-                GXCreateFrameBuffer(r26, r26);
-                needsRestore = true;
+                // All four-channel shadow batches share one atlas target.
+                // Opening another framebuffer each time chan wraps nests the
+                // targets, while this function restores only once at the end.
+                if (!needsRestore) {
+                    GXCreateFrameBuffer(r26, r26);
+                    needsRestore = true;
+                }
+                GXSetViewportRender(0.0f, 0.0f, r26, r26, 0.0f, 1.0f);
+                GXSetScissorRender(0, 0, r26, r26);
 #else
                 GXSetViewport(0.0f, 0.0f, r26, r26, 0.0f, 1.0f);
                 GXSetScissor(0, 0, r26, r26);

@@ -318,6 +318,9 @@ int daObjRotStair_c::Draw() {
                 #if WIDESCREEN_SUPPORT
                 mDoGph_gInf_c::setWideZoomLightProjection(lightMtx);
                 #endif
+                #if TARGET_PC
+                mDoGph_gInf_c::setStereoLightProjection(lightMtx, 1.0f);
+                #endif
                 texMtxInfo->setEffectMtx(lightMtx);
                 modelData->simpleCalcMaterial(0, (MtxP)j3dDefaultMtx);
             }

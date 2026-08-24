@@ -305,6 +305,9 @@ int daGrdWater_c::Draw() {
             #if WIDESCREEN_SUPPORT
             mDoGph_gInf_c::setWideZoomLightProjection(afStack_50);
             #endif
+            #if TARGET_PC
+            mDoGph_gInf_c::setStereoLightProjection(afStack_50, 1.0f);
+            #endif
             mtxInfo->setEffectMtx(afStack_50);
             modelData2->simpleCalcMaterial(0, (MtxP)j3dDefaultMtx);
         }

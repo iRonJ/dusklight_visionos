@@ -299,6 +299,7 @@ public:
     #endif
 
     #if TARGET_PC
+    static void setStereoLightProjection(Mtx& m, f32 horizontalScale);
     static void updateRenderSize();
     #endif
 

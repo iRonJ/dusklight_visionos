@@ -60,15 +60,25 @@ inline float4 sample_diorama_color(texture2d<float> colorTexture,
         return colorTexture.sample(colorSampler, uv);
     }
 
-    // IOSurface-backed textures have no mip chain. Average across the pixel
-    // footprint when the physical window is smaller or farther away so fine
-    // geometry does not shimmer under head movement.
-    const float2 dx = uvDx * 0.375f;
-    const float2 dy = uvDy * 0.375f;
-    return (colorTexture.sample(colorSampler, uv - dx - dy) +
-            colorTexture.sample(colorSampler, uv + dx - dy) +
-            colorTexture.sample(colorSampler, uv - dx + dy) +
-            colorTexture.sample(colorSampler, uv + dx + dy)) * 0.25f;
+    // IOSurface-backed textures have no mip chain. Integrate a 3x3 grid over
+    // the anisotropic destination-pixel footprint instead of sampling only
+    // four corners, which became visibly blocky on distant windows.
+    const float2 dx = uvDx / 3.0f;
+    const float2 dy = uvDy / 3.0f;
+    float4 sum = float4(0.0f);
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            sum += colorTexture.sample(colorSampler, uv + float(x) * dx + float(y) * dy);
+        }
+    }
+    return sum / 9.0f;
+}
+
+inline float quad_edge_coverage(float2 uv) {
+    const float2 edgeDistance = min(uv, 1.0f - uv);
+    const float2 aaWidth = max(fwidth(uv), float2(1.0e-5f));
+    const float2 coverage = smoothstep(float2(0.0f), aaWidth, edgeDistance);
+    return min(coverage.x, coverage.y);
 }
 
 vertex DioramaVertexOut diorama_vertex_main(DioramaVertexIn in [[stage_in]],
@@ -83,7 +93,14 @@ fragment float4 diorama_fragment_main(
     DioramaVertexOut in [[stage_in]],
     texture2d<float> colorTexture [[texture(0)]],
     sampler colorSampler [[sampler(0)]]) {
-    return sample_diorama_color(colorTexture, colorSampler, in.uv);
+    float4 color = sample_diorama_color(colorTexture, colorSampler, in.uv);
+    const float coverage = quad_edge_coverage(in.uv);
+    if (coverage < 0.5f) {
+        discard_fragment();
+    }
+    color.rgb *= coverage;
+    color.a *= coverage;
+    return color;
 }
 
 struct DioramaInteractiveFragmentOut {
@@ -98,6 +115,12 @@ fragment DioramaInteractiveFragmentOut diorama_interactive_fragment_main(
     constant ushort& trackingArea [[buffer(0)]]) {
     DioramaInteractiveFragmentOut out;
     out.color = sample_diorama_color(colorTexture, colorSampler, in.uv);
+    const float coverage = quad_edge_coverage(in.uv);
+    if (coverage < 0.5f) {
+        discard_fragment();
+    }
+    out.color.rgb *= coverage;
+    out.color.a *= coverage;
     out.trackingArea = trackingArea;
     return out;
 }

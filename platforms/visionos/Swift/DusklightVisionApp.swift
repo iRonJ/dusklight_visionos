@@ -8,6 +8,33 @@ import Spatial
 
 private let logger = Logger(subsystem: "dev.twilitrealm.dusk", category: "App")
 
+private actor DiscImporter {
+    static let shared = DiscImporter()
+
+    func importDisc(from sourceURL: URL) throws -> String {
+        let accessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        logger.info("[DusklightSwift] Selected file: \(sourceURL.path) (security-scoped: \(accessing))")
+        let documentsURL = FileManager.default.urls(
+            for: .documentDirectory, in: .userDomainMask).first!
+        let localURL = documentsURL.appendingPathComponent(sourceURL.lastPathComponent)
+
+        if sourceURL.path == localURL.path || FileManager.default.fileExists(atPath: localURL.path) {
+            return localURL.path
+        }
+
+        try Task.checkCancellation()
+        try FileManager.default.copyItem(at: sourceURL, to: localURL)
+        logger.info("[DusklightSwift] Successfully copied disc to: \(localURL.path)")
+        return localURL.path
+    }
+}
+
 @_silgen_name("dusklight_visionos_start")
 func dusklight_visionos_start(_ layerRenderer: LayerRenderer)
 
@@ -223,11 +250,14 @@ final class VisionSessionModel: ObservableObject {
 
 struct LauncherView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var session: VisionSessionModel
     @AppStorage("dusklight_last_iso_path") private var selectedIsoPath: String = ""
     @State private var showFilePicker = false
     @State private var isLaunching = false
     @State private var statusMessage = ""
+    @State private var importTask: Task<Void, Never>?
+    @State private var launchTask: Task<Void, Never>?
 
     private let discExtensions = ["iso", "gcm", "rvz", "ciso", "wbfs"]
 
@@ -311,6 +341,12 @@ struct LauncherView: View {
                 selectedIsoPath = ""
             }
         }
+        .onDisappear {
+            importTask?.cancel()
+            if !session.immersiveOpen && !session.gameStarted {
+                launchTask?.cancel()
+            }
+        }
         .fileImporter(
             isPresented: $showFilePicker,
             allowedContentTypes: [
@@ -331,37 +367,23 @@ struct LauncherView: View {
         switch result {
         case .success(let urls):
             guard let url = urls.first else { return }
-            let accessing = url.startAccessingSecurityScopedResource()
-            logger.info("[DusklightSwift] Selected file: \(url.path) (security-scoped: \(accessing))")
-
             let fileName = url.lastPathComponent
             statusMessage = "Importing \(fileName)..."
-
-            Task.detached(priority: .userInitiated) {
-                defer {
-                    if accessing {
-                        url.stopAccessingSecurityScopedResource()
-                    }
-                }
-
-                let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-                let localURL = docsDir.appendingPathComponent(fileName)
-
-                if url.path != localURL.path && !FileManager.default.fileExists(atPath: localURL.path) {
-                    do {
-                        try FileManager.default.copyItem(at: url, to: localURL)
-                        logger.info("[DusklightSwift] Successfully copied disc to: \(localURL.path)")
-                    } catch {
-                        logger.error("[DusklightSwift] Failed to copy disc: \(error.localizedDescription)")
-                    }
-                }
-
-                let finalPath = FileManager.default.fileExists(atPath: localURL.path) ? localURL.path : url.path
-                await MainActor.run {
+            importTask?.cancel()
+            importTask = Task(priority: .userInitiated) {
+                do {
+                    let finalPath = try await DiscImporter.shared.importDisc(from: url)
+                    try Task.checkCancellation()
                     selectedIsoPath = finalPath
                     let discName = (finalPath as NSString).lastPathComponent
                     statusMessage = "Ready: " + discName
                     logger.info("[DusklightSwift] Set selectedIsoPath to: \(finalPath)")
+                } catch is CancellationError {
+                    return
+                } catch {
+                    let description = error.localizedDescription
+                    statusMessage = "Import failed: " + description
+                    logger.error("[DusklightSwift] Failed to copy disc: \(description)")
                 }
             }
         case .failure(let error):
@@ -383,9 +405,18 @@ struct LauncherView: View {
         session.isOpeningImmersive = true
         logger.info("[DusklightSwift] launchGame() clicked with resolved disc path: \(resolvedPath)")
 
-        Task {
+        launchTask?.cancel()
+        launchTask = Task {
+            defer {
+                isLaunching = false
+                session.isOpeningImmersive = false
+            }
             logger.info("[DusklightSwift] Opening DusklightImmersiveSpace...")
             let result = await openImmersiveSpace(id: "DusklightImmersiveSpace")
+            guard !Task.isCancelled, scenePhase == .active else {
+                logger.info("[DusklightSwift] Launch cancelled while opening immersive space")
+                return
+            }
             logger.info("[DusklightSwift] openImmersiveSpace result: \(String(describing: result))")
             switch result {
             case .opened:
@@ -395,19 +426,12 @@ struct LauncherView: View {
                 resolvedPath.withCString { cPath in
                     dusklight_start_game_with_iso(cPath)
                 }
-                session.isOpeningImmersive = false
             case .error:
                 statusMessage = "Error opening Immersive Space"
-                isLaunching = false
-                session.isOpeningImmersive = false
                 logger.error("[DusklightSwift] Failed to open immersive space")
             case .userCancelled:
-                isLaunching = false
-                session.isOpeningImmersive = false
                 logger.info("[DusklightSwift] User cancelled immersive space")
             @unknown default:
-                isLaunching = false
-                session.isOpeningImmersive = false
                 break
             }
         }

@@ -32,6 +32,9 @@ static int daObj_Lv3waterB_Draw(obj_lv3WaterB_class* i_this) {
             #if WIDESCREEN_SUPPORT
             mDoGph_gInf_c::setWideZoomLightProjection(m);
             #endif
+            #if TARGET_PC
+            mDoGph_gInf_c::setStereoLightProjection(m, 1.0f);
+            #endif
 
             tex_mtx_info->setEffectMtx(m);
             i_this->mpBWaterModel->getModelData()->simpleCalcMaterial((MtxP)j3dDefaultMtx);

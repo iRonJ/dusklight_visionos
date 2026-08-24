@@ -7,6 +7,11 @@ namespace dusk::gfx {
 // center-eye path (title screens, loading, and other 2D-only states).
 bool RenderVisionStereoFrame();
 
+// Returns the horizontal off-axis projection term added for the active eye.
+// Screen-projected effects use this to sample that eye's framebuffer with the
+// same convergence plane as regular scene geometry.
+float GetVisionStereoProjectionShift();
+
 // CompositorServices can pause or replace its layer during system UI
 // interruptions. These functions let the engine stop advancing while no
 // drawable consumer exists, then resume the same game session.

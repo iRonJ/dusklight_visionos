@@ -376,6 +376,9 @@ int daLv3Water_c::Draw() {
                 #if WIDESCREEN_SUPPORT
                 mDoGph_gInf_c::setWideZoomLightProjection(lightProjMtx);
                 #endif
+                #if TARGET_PC
+                mDoGph_gInf_c::setStereoLightProjection(lightProjMtx, 1.0f);
+                #endif
 
                 #if DEBUG
                 if(fapGm_HIO_c::isCaptureScreen()) {

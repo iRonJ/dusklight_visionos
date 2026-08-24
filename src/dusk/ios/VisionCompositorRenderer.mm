@@ -42,6 +42,9 @@ std::atomic<float> g_dioramaWidth{kDioramaBaseWidth};
 std::atomic<float> g_dioramaAspect{16.0f / 9.0f};
 std::atomic<uint64_t> g_dioramaPlacementSequence{0};
 std::atomic<uint64_t> g_dioramaRecenterGeneration{0};
+DusklightDioramaAnchor* g_sharedDioramaAnchor = nil;
+simd_float4x4 g_dioramaAnchorReference = matrix_identity_float4x4;
+std::atomic<bool> g_hasDioramaAnchorReference{false};
 
 struct DioramaPlacement {
     float x;
@@ -130,17 +133,23 @@ DioramaPlacement CurrentDioramaPlacement() {
         _running.store(false);
         _pipelineColorFormat = MTLPixelFormatInvalid;
         _pipelineTrackingFormat = MTLPixelFormatInvalid;
-        _hasAnchoredInitialPosition = NO;
+        _hasAnchoredInitialPosition =
+            g_hasDioramaAnchorReference.load(std::memory_order_acquire);
         _loggedDiagnosticSource = NO;
         _loggedGameSource = NO;
         // Fallback placement (no tracking): 1.5m in front of the world origin
         _worldModelMatrix = MatrixTranslation(0.0f, 0.0f, -1.5f);
-        _anchorReferenceMatrix = matrix_identity_float4x4;
+        _anchorReferenceMatrix = _hasAnchoredInitialPosition
+            ? g_dioramaAnchorReference
+            : matrix_identity_float4x4;
         _lastRecenterGeneration = g_dioramaRecenterGeneration.load(std::memory_order_acquire);
 
         [self setupGeometry];
         [self setupDiagnosticTexture];
-        _anchor = [[DusklightDioramaAnchor alloc] init];
+        if (!g_sharedDioramaAnchor) {
+            g_sharedDioramaAnchor = [[DusklightDioramaAnchor alloc] init];
+        }
+        _anchor = g_sharedDioramaAnchor;
     }
     return self;
 }
@@ -188,6 +197,11 @@ DioramaPlacement CurrentDioramaPlacement() {
     pld.fragmentFunction = fragFunc;
     pld.vertexDescriptor = vertDesc;
     pld.colorAttachments[0].pixelFormat = colorFormat;
+    pld.colorAttachments[0].blendingEnabled = YES;
+    pld.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
+    pld.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+    pld.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
+    pld.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
     pld.depthAttachmentPixelFormat = depthFormat;
 
     _pipelineState = [_device newRenderPipelineStateWithDescriptor:pld error:&error];
@@ -268,7 +282,6 @@ DioramaPlacement CurrentDioramaPlacement() {
     if (_running.load()) return;
     if (_renderThread.joinable()) {
         _renderThread.join();
-        _anchor = [[DusklightDioramaAnchor alloc] init];
     }
     _running.store(true);
     _renderThread = std::thread([self]() {
@@ -285,7 +298,6 @@ DioramaPlacement CurrentDioramaPlacement() {
     if (_renderThread.joinable()) {
         _renderThread.join();
     }
-    [_anchor stop];
 }
 
 - (BOOL)isRunning {
@@ -334,7 +346,6 @@ DioramaPlacement CurrentDioramaPlacement() {
 
     _running.store(false);
     dusk::gfx::SetVisionCompositorRunning(compositorToken, false);
-    [_anchor stop];
     os_log(OS_LOG_DEFAULT, "[Dusklight] VisionCompositorRenderer frame loop stopped");
 }
 
@@ -468,6 +479,8 @@ DioramaPlacement CurrentDioramaPlacement() {
             // Preserve the initial head orientation as well as position so the
             // flat diorama is perpendicular to the user's gaze, not world axes.
             _anchorReferenceMatrix = originFromDevice;
+            g_dioramaAnchorReference = _anchorReferenceMatrix;
+            g_hasDioramaAnchorReference.store(true, std::memory_order_release);
             simd_float4x4 initialModel =
                 simd_mul(_anchorReferenceMatrix,
                          MatrixTranslation(0.0f, 0.0f, -kDioramaBaseDistance));
@@ -605,8 +618,6 @@ DioramaPlacement CurrentDioramaPlacement() {
 
     bool isDedicated = (textureCount == viewCount && viewCount > 1);
     bool isLayered = (textureCount == 1 && viewCount > 1);
-    size_t rateMapCount = cp_drawable_get_rasterization_rate_map_count(drawable);
-
     for (size_t viewIdx = 0; viewIdx < viewCount; ++viewIdx) {
         cp_view_t view = cp_drawable_get_view(drawable, viewIdx);
         id<MTLTexture> srcColor = (viewIdx == 0) ? srcLeftCol : srcRightCol;
@@ -673,13 +684,6 @@ DioramaPlacement CurrentDioramaPlacement() {
             passDesc.depthAttachment.loadAction = MTLLoadActionClear;
             passDesc.depthAttachment.storeAction = MTLStoreActionStore;
             passDesc.depthAttachment.clearDepth = 0.0;
-        }
-
-        if (rateMapCount > 0) {
-            // CompositorServices supplies a drawable-level rate map for this
-            // explicit per-eye pass arrangement. Treating map 1 as an eye-1
-            // map warps the right-eye image on device.
-            passDesc.rasterizationRateMap = cp_drawable_get_rasterization_rate_map(drawable, 0);
         }
 
         // Each individual render pass targets a single slice, so array length is 1
@@ -787,6 +791,9 @@ void dusklight_visionos_stop(void) {
         [g_visionHost stop];
         g_visionHost = nil;
     }
+    [g_sharedDioramaAnchor stop];
+    g_sharedDioramaAnchor = nil;
+    g_hasDioramaAnchorReference.store(false, std::memory_order_release);
 }
 
 void dusklight_visionos_set_app_active(bool active) {
@@ -825,6 +832,7 @@ void dusklight_visionos_recenter_diorama(void) {
     g_dioramaX.store(0.0f, std::memory_order_relaxed);
     g_dioramaY.store(0.0f, std::memory_order_relaxed);
     g_dioramaPlacementSequence.fetch_add(1, std::memory_order_release);
+    g_hasDioramaAnchorReference.store(false, std::memory_order_release);
     g_dioramaRecenterGeneration.fetch_add(1, std::memory_order_acq_rel);
 }
 

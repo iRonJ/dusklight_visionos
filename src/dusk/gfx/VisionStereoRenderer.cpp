@@ -13,6 +13,7 @@
 #include "dusk/gfx/StereoParallax.hpp"
 #include "dusk/logging.h"
 #include "f_op/f_op_camera_mng.h"
+#include "f_op/f_op_overlap_mng.h"
 #include "f_pc/f_pc_draw.h"
 #include "f_pc/f_pc_manager.h"
 #include "f_op/f_op_view.h"
@@ -36,6 +37,7 @@ constexpr uint32_t kRightEyeCaptureTag = 0x44535245; // DSRE
 std::atomic<const void*> s_compositorToken{nullptr};
 std::atomic<const void*> s_runningCompositorToken{nullptr};
 std::atomic<bool> s_visionAppActive{true};
+thread_local float s_eyeProjectionShift = 0.0f;
 
 struct CameraSnapshot {
     lookat_class lookat;
@@ -63,6 +65,7 @@ void RestoreCamera(view_class& view, const CameraSnapshot& snapshot) {
     std::memcpy(view.projViewMtx, snapshot.projectionView, sizeof(Mtx44));
     std::memcpy(view.viewMtxNoTrans, snapshot.viewNoTranslation, sizeof(Mtx));
     j3dSys.setViewMtx(view.viewMtx);
+    s_eyeProjectionShift = 0.0f;
 }
 
 void ApplyEyeCamera(view_class& view, const CameraSnapshot& centerCamera,
@@ -90,8 +93,11 @@ void ApplyEyeCamera(view_class& view, const CameraSnapshot& centerCamera,
     // Parallel cameras need an opposite projection shift to put the chosen
     // convergence plane at zero disparity. This avoids vertical disparity
     // and the scale/shear artifacts produced by toe-in cameras.
+    s_eyeProjectionShift = 0.0f;
     if (convergenceDistance > 1.0f) {
-        view.projMtx[0][2] += -view.projMtx[0][0] * cameraOffset / convergenceDistance;
+        s_eyeProjectionShift =
+            -view.projMtx[0][0] * cameraOffset / convergenceDistance;
+        view.projMtx[0][2] += s_eyeProjectionShift;
     }
 
     cMtx_inverse(view.viewMtx, view.invViewMtx);
@@ -126,6 +132,10 @@ bool DrawEye(view_class& view, const CameraSnapshot& centerCamera, float eyeSign
 
 } // namespace
 
+float GetVisionStereoProjectionShift() {
+    return s_eyeProjectionShift;
+}
+
 void RegisterVisionCompositor(const void* token) {
     s_compositorToken.store(token, std::memory_order_release);
     s_runningCompositorToken.store(nullptr, std::memory_order_release);
@@ -155,6 +165,7 @@ bool IsVisionCompositorRunning() {
 }
 
 bool RenderVisionStereoFrame() {
+    s_eyeProjectionShift = 0.0f;
     auto* stereoPass = GetStereoParallaxPass();
     if (!stereoPass || !stereoPass->IsEnabled() || dComIfGp_getWindowNum() == 0) {
         return false;
@@ -177,7 +188,12 @@ bool RenderVisionStereoFrame() {
     SaveCamera(*view, centerCamera);
 
     const StereoParallaxSettings settings = stereoPass->GetSettings();
-    const float halfEyeOffset = settings.eyeSeparation * kGameUnitsPerMeter;
+    // Scene overlaps composite transient wipe/loading imagery that has no
+    // stable world depth. Keep it at the window plane to avoid a brief,
+    // uncomfortable disparity spike between scenes.
+    const bool sceneTransition = fopOvlpM_IsDoingReq() != 0;
+    const float halfEyeOffset =
+        sceneTransition ? 0.0f : settings.eyeSeparation * kGameUnitsPerMeter;
     const float convergenceDistance = 150.0f + settings.convergenceDepth * 1900.0f;
 
     aurora::gfx::CapturedFrame left;
@@ -199,6 +215,9 @@ bool RenderVisionStereoFrame() {
     aurora::gfx::set_offscreen_uses_native_logical_size(false);
 
     if (!leftOk || !rightOk) {
+        // The caller will redraw a complete center-eye frame. The post pass
+        // can safely depth-warp that fallback instead of publishing a partial
+        // eye capture or freezing on the previous image (which may be a fade).
         DuskLog.warn("[DuskStereo] Dual-draw capture failed; using center-eye fallback");
         return false;
     }
@@ -219,6 +238,10 @@ bool RenderVisionStereoFrame() {
 namespace dusk::gfx {
 bool RenderVisionStereoFrame() {
     return false;
+}
+
+float GetVisionStereoProjectionShift() {
+    return 0.0f;
 }
 
 void RegisterVisionCompositor(const void*) {}
