@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -233,13 +234,14 @@ int DuskMain(int argc, char* argv[]) {
 #include <SDL3/SDL_main.h>
 #include <os/log.h>
 
+static std::atomic<bool> s_visionGameStarted{false};
+
 extern "C" void dusklight_start_game_with_iso(const char* isoPath) {
-    static bool started = false;
-    if (started) {
+    bool expected = false;
+    if (!s_visionGameStarted.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
         os_log(OS_LOG_DEFAULT, "[Dusklight] Game already started, ignoring launch request");
         return;
     }
-    started = true;
 
     os_log(OS_LOG_DEFAULT, "[Dusklight] Starting game with isoPath: %{public}s",
            isoPath ? isoPath : "<null>");
@@ -263,6 +265,10 @@ extern "C" void dusklight_start_game_with_iso(const char* isoPath) {
 
 extern "C" void dusklight_start_game_thread() {
     dusklight_start_game_with_iso(nullptr);
+}
+
+extern "C" bool dusklight_visionos_is_game_running() {
+    return s_visionGameStarted.load(std::memory_order_acquire);
 }
 #else
 int main(int argc, char* argv[]) {

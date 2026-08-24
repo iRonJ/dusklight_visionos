@@ -4,6 +4,7 @@ import SwiftUI
 import CompositorServices
 import UniformTypeIdentifiers
 import OSLog
+import Spatial
 
 private let logger = Logger(subsystem: "dev.twilitrealm.dusk", category: "App")
 
@@ -16,9 +17,189 @@ func dusklight_start_game_with_iso(_ isoPath: UnsafePointer<CChar>?)
 @_silgen_name("dusklight_start_game_thread")
 func dusklight_start_game_thread()
 
+@_silgen_name("dusklight_visionos_is_game_running")
+func dusklight_visionos_is_game_running() -> Bool
+
+@_silgen_name("dusklight_visionos_set_app_active")
+func dusklight_visionos_set_app_active(_ active: Bool)
+
+@_silgen_name("dusklight_visionos_is_compositor_running")
+func dusklight_visionos_is_compositor_running() -> Bool
+
+@_silgen_name("dusklight_visionos_set_diorama_placement")
+func dusklight_visionos_set_diorama_placement(
+    _ x: Float, _ y: Float, _ z: Float, _ width: Float, _ aspectRatio: Float)
+
+@_silgen_name("dusklight_visionos_recenter_diorama")
+func dusklight_visionos_recenter_diorama()
+
+@MainActor
+final class DioramaInteractionModel: ObservableObject {
+    private struct Contact {
+        var startPoint: Point3D
+        var point: Point3D
+        var startTime: TimeInterval
+    }
+
+    private struct TwoHandStart {
+        var ids: [SpatialEventCollection.Event.ID]
+        var midpoint: Point3D
+        var separation: Double
+        var x: Double
+        var y: Double
+        var z: Double
+        var width: Double
+    }
+
+    @Published var x = 0.0
+    @Published var y = 0.0
+    @Published var z = 0.0
+    @Published var width = 1.6
+    @Published var aspectIndex = 0
+
+    private var contacts: [SpatialEventCollection.Event.ID: Contact] = [:]
+    private var twoHandStart: TwoHandStart?
+    private var suppressTap = false
+
+    private var aspectRatio: Double {
+        aspectIndex == 0 ? 16.0 / 9.0 : 64.0 / 27.0
+    }
+
+    func handle(_ events: SpatialEventCollection) {
+        for event in events {
+            guard event.trackingAreaIdentifier.rawValue == 1 else {
+                continue
+            }
+            switch event.phase {
+            case .active:
+                if var contact = contacts[event.id] {
+                    contact.point = event.location3D
+                    contacts[event.id] = contact
+                } else {
+                    contacts[event.id] = Contact(
+                        startPoint: event.location3D,
+                        point: event.location3D,
+                        startTime: event.timestamp)
+                }
+            case .ended, .cancelled:
+                if event.phase == .ended,
+                   !suppressTap,
+                   contacts.count == 1,
+                   let contact = contacts[event.id],
+                   event.timestamp - contact.startTime < 0.45,
+                   distance(contact.startPoint, event.location3D) < 0.05 {
+                    cycleAspectRatio()
+                }
+                contacts.removeValue(forKey: event.id)
+            @unknown default:
+                break
+            }
+        }
+
+        if contacts.count >= 2 {
+            updateTwoHandGesture()
+        } else {
+            twoHandStart = nil
+            if contacts.isEmpty {
+                suppressTap = false
+            }
+        }
+    }
+
+    func setAspectIndex(_ index: Int) {
+        aspectIndex = index == 0 ? 0 : 1
+        publishPlacement()
+    }
+
+    func setWidth(_ newWidth: Double) {
+        width = min(max(newWidth, 0.6), 3.2)
+        publishPlacement()
+    }
+
+    func recenter() {
+        x = 0.0
+        y = 0.0
+        z = 0.0
+        dusklight_visionos_recenter_diorama()
+        publishPlacement()
+    }
+
+    func resetGesture() {
+        contacts.removeAll()
+        twoHandStart = nil
+        suppressTap = false
+    }
+
+    private func updateTwoHandGesture() {
+        if twoHandStart == nil {
+            let ids = Array(contacts.keys.prefix(2))
+            guard ids.count == 2,
+                  let first = contacts[ids[0]],
+                  let second = contacts[ids[1]] else { return }
+            twoHandStart = TwoHandStart(
+                ids: ids,
+                midpoint: midpoint(first.point, second.point),
+                separation: max(distance(first.point, second.point), 0.02),
+                x: x,
+                y: y,
+                z: z,
+                width: width)
+            suppressTap = true
+        }
+
+        guard let start = twoHandStart,
+              let first = contacts[start.ids[0]],
+              let second = contacts[start.ids[1]] else {
+            twoHandStart = nil
+            return
+        }
+
+        let currentMidpoint = midpoint(first.point, second.point)
+        let scale = distance(first.point, second.point) / start.separation
+        x = start.x + Double(currentMidpoint.x - start.midpoint.x)
+        y = start.y + Double(currentMidpoint.y - start.midpoint.y)
+        z = start.z + Double(currentMidpoint.z - start.midpoint.z)
+        width = min(max(start.width * scale, 0.6), 3.2)
+        publishPlacement()
+    }
+
+    private func cycleAspectRatio() {
+        aspectIndex = aspectIndex == 0 ? 1 : 0
+        publishPlacement()
+        logger.info("[DusklightSwift] Diorama aspect changed to \(self.aspectIndex == 0 ? "16:9" : "21:9")")
+    }
+
+    private func publishPlacement() {
+        dusklight_visionos_set_diorama_placement(
+            Float(x), Float(y), Float(z), Float(width), Float(aspectRatio))
+    }
+
+    private func midpoint(_ lhs: Point3D, _ rhs: Point3D) -> Point3D {
+        Point3D(
+            x: (lhs.x + rhs.x) * 0.5,
+            y: (lhs.y + rhs.y) * 0.5,
+            z: (lhs.z + rhs.z) * 0.5)
+    }
+
+    private func distance(_ lhs: Point3D, _ rhs: Point3D) -> Double {
+        let dx = Double(lhs.x - rhs.x)
+        let dy = Double(lhs.y - rhs.y)
+        let dz = Double(lhs.z - rhs.z)
+        return (dx * dx + dy * dy + dz * dz).squareRoot()
+    }
+}
+
+@MainActor
+final class VisionSessionModel: ObservableObject {
+    @Published var gameStarted = dusklight_visionos_is_game_running()
+    @Published var immersiveOpen = false
+    @Published var isOpeningImmersive = false
+    let interaction = DioramaInteractionModel()
+}
+
 struct LauncherView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
-    @Environment(\.dismissWindow) private var dismissWindow
+    @ObservedObject var session: VisionSessionModel
     @AppStorage("dusklight_last_iso_path") private var selectedIsoPath: String = ""
     @State private var showFilePicker = false
     @State private var isLaunching = false
@@ -175,6 +356,7 @@ struct LauncherView: View {
 
         selectedIsoPath = resolvedPath
         isLaunching = true
+        session.isOpeningImmersive = true
         logger.info("[DusklightSwift] launchGame() clicked with resolved disc path: \(resolvedPath)")
 
         Task {
@@ -184,19 +366,24 @@ struct LauncherView: View {
             switch result {
             case .opened:
                 logger.info("[DusklightSwift] Immersive space opened successfully. Starting game engine...")
+                session.immersiveOpen = true
+                session.gameStarted = true
                 resolvedPath.withCString { cPath in
                     dusklight_start_game_with_iso(cPath)
                 }
-                dismissWindow()
+                session.isOpeningImmersive = false
             case .error:
                 statusMessage = "Error opening Immersive Space"
                 isLaunching = false
+                session.isOpeningImmersive = false
                 logger.error("[DusklightSwift] Failed to open immersive space")
             case .userCancelled:
                 isLaunching = false
+                session.isOpeningImmersive = false
                 logger.info("[DusklightSwift] User cancelled immersive space")
             @unknown default:
                 isLaunching = false
+                session.isOpeningImmersive = false
                 break
             }
         }
@@ -227,19 +414,142 @@ struct LauncherView: View {
     }
 }
 
+struct DioramaSessionView: View {
+    @ObservedObject var session: VisionSessionModel
+    let resume: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Label("Dusklight Diorama", systemImage: "rectangle.on.rectangle.angled")
+                    .font(.headline)
+                Spacer()
+                Circle()
+                    .fill(session.immersiveOpen ? Color.green : Color.secondary)
+                    .frame(width: 8, height: 8)
+            }
+
+            Picker("Aspect", selection: Binding(
+                get: { session.interaction.aspectIndex },
+                set: { session.interaction.setAspectIndex($0) })) {
+                Text("16:9").tag(0)
+                Text("21:9").tag(1)
+            }
+            .pickerStyle(.segmented)
+
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.left.and.right")
+                    .foregroundStyle(.secondary)
+                Slider(value: Binding(
+                    get: { session.interaction.width },
+                    set: { session.interaction.setWidth($0) }), in: 0.6...3.2)
+            }
+
+            HStack {
+                Button(action: { session.interaction.recenter() }) {
+                    Label("Recenter", systemImage: "viewfinder")
+                }
+                Spacer()
+                if !session.immersiveOpen {
+                    Button(action: resume) {
+                        Label("Resume", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 340, idealWidth: 400, maxWidth: 560,
+               minHeight: 190, idealHeight: 220, maxHeight: 360)
+    }
+}
+
+struct DusklightRootView: View {
+    @ObservedObject var session: VisionSessionModel
+    @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        Group {
+            if session.gameStarted {
+                DioramaSessionView(session: session) {
+                    Task { await resumeImmersiveSpace() }
+                }
+            } else {
+                LauncherView(session: session)
+            }
+        }
+        .onAppear {
+            session.gameStarted = dusklight_visionos_is_game_running()
+            dusklight_visionos_set_app_active(scenePhase == .active)
+            if session.gameStarted && !session.immersiveOpen {
+                Task { await resumeImmersiveSpace() }
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            let active = newPhase == .active
+            dusklight_visionos_set_app_active(active)
+            if !active {
+                session.immersiveOpen = false
+                session.interaction.resetGesture()
+            } else if session.gameStarted && !session.immersiveOpen {
+                Task { await resumeImmersiveSpace() }
+            }
+        }
+    }
+
+    private func resumeImmersiveSpace() async {
+        guard session.gameStarted,
+              !session.immersiveOpen,
+              !session.isOpeningImmersive else { return }
+        session.isOpeningImmersive = true
+        dusklight_visionos_set_app_active(true)
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        if dusklight_visionos_is_compositor_running() {
+            session.isOpeningImmersive = false
+            session.immersiveOpen = true
+            logger.info("[DusklightSwift] Existing immersive compositor resumed")
+            return
+        }
+        let result = await openImmersiveSpace(id: "DusklightImmersiveSpace")
+        session.isOpeningImmersive = false
+        if case .opened = result {
+            session.immersiveOpen = true
+            logger.info("[DusklightSwift] Resumed existing game in immersive space")
+        } else {
+            logger.info("[DusklightSwift] Immersive resume result: \(String(describing: result))")
+        }
+    }
+}
+
 @main
 struct DusklightVisionApp: App {
+    @StateObject private var session = VisionSessionModel()
     @State private var immersionStyle: ImmersionStyle = .mixed
 
     var body: some Scene {
         WindowGroup(id: "main") {
-            LauncherView()
+            DusklightRootView(session: session)
         }
-        .windowResizability(.contentSize)
+        .defaultSize(width: 420, height: 240)
+        .windowResizability(.contentMinSize)
 
         ImmersiveSpace(id: "DusklightImmersiveSpace") {
             CompositorLayer(configuration: DusklightCompositorConfig()) { layerRenderer in
+                layerRenderer.onSpatialEvent = { events in
+                    session.interaction.handle(events)
+                }
+                session.immersiveOpen = true
+                dusklight_visionos_set_app_active(true)
                 dusklight_visionos_start(layerRenderer)
+            }
+            .onAppear {
+                session.immersiveOpen = true
+            }
+            .onDisappear {
+                session.immersiveOpen = false
+                session.interaction.resetGesture()
+                dusklight_visionos_set_app_active(false)
             }
         }
         .immersionStyle(selection: $immersionStyle, in: .mixed, .full)

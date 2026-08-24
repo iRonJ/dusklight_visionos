@@ -15,7 +15,7 @@ Dusklight is a reverse-engineered reimplementation of Twilight Princess.
 It aims to be as accurate as possible to the original while also providing new options, enhancements, and tools to customize your experience.
 
 > [!NOTE]
-> This fork additionally includes a **native Apple Vision (visionOS) port**. Dusklight builds and runs on visionOS — verified on the visionOS 26.5 Simulator and on Apple Vision Pro hardware — rendering in a window with a 21:9 presentation. See the [visionOS section of CLAUDE.md](CLAUDE.md#apple-vision-visionos-port) for the build, patches, and deployment notes.
+> This fork includes a native Apple Vision Pro port for visionOS 26.5. It renders the game as a head-tracked stereoscopic diorama using Compositor Services, Metal, and independent left/right game-engine scene draws.
 
 # Setup
 
@@ -50,12 +50,59 @@ Currently, only the GameCube USA and EUR releases are supported. Support for oth
 - Press **Play**!
 
 **Apple Vision Pro (visionOS)**
-- The visionOS port is built from source (no prebuilt release). See the [visionOS section of CLAUDE.md](CLAUDE.md#apple-vision-visionos-port) for build presets, required patches, signing, and `devicectl` deployment.
-- Once installed, launch Dusklight from the headset, press **Select Disc Image**, and provide your supported game dump.
+- The visionOS port is built from source. Follow the instructions below, then launch Dusklight from the headset's Home View.
 
 # Building
 
 If you'd like to build Dusklight from source, please read the [build instructions](docs/building.md).
+
+## Apple Vision Pro
+
+The visionOS build requires visionOS 26.5 and an Apple Silicon Mac with:
+
+- Xcode with the visionOS 26.5 SDK and command-line tools selected
+- CMake and Ninja
+- Rust nightly with the visionOS target: `rustup target add --toolchain nightly aarch64-apple-visionos`
+- An Apple Development certificate and a development provisioning profile that includes the headset and covers `dev.twilitrealm.dusk`
+- A legally dumped USA or EUR GameCube disc image (`.iso` or `.rvz`)
+
+Clone the repository and its submodules, then configure and build the device target:
+
+```sh
+git clone --recursive https://github.com/iRonJ/dusklight_visionos.git
+cd dusklight_visionos
+
+cmake --preset visionos-default \
+  -DCMAKE_OBJC_FLAGS="-Wno-error=return-mismatch" \
+  -DCMAKE_OBJCXX_FLAGS="-Wno-error=return-mismatch"
+cmake --build build/visionos-default --target dusklight
+```
+
+To sign and install, find the headset identifier with `xcrun devicectl list devices`, then provide your development-signing values to the deployment script:
+
+```sh
+export VISIONOS_DEVICE_ID="<paired-headset-identifier>"
+export VISIONOS_SIGNING_IDENTITY="Apple Development: Your Name (XXXXXXXXXX)"
+export VISIONOS_TEAM_ID="<10-character-team-id>"
+export VISIONOS_PROVISIONING_PROFILE="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/<profile>.mobileprovision"
+
+./scripts/deploy_visionos.sh
+```
+
+The script rebuilds, embeds the provisioning profile, signs `build/visionos-default/Dusklight.app`, and installs it with `devicectl`. Launch the installed app from the headset's Home View; launching it through `devicectl` is not reliable for an immersive app.
+
+If the document picker cannot access the disc image directly, copy it into the app sandbox:
+
+```sh
+xcrun devicectl device copy to \
+  --device "$VISIONOS_DEVICE_ID" \
+  --domain-type appDataContainer \
+  --domain-identifier dev.twilitrealm.dusk \
+  --source "/path/to/game.rvz" \
+  --destination "Documents/game.rvz"
+```
+
+In the immersive space, pinch the diorama with both hands to move it; change the distance between your hands to resize it proportionally. A quick one-hand pinch cycles between 16:9 and 21:9. The companion window also provides aspect, width, recenter, and resume controls. Dusklight pauses rendering when it becomes inactive and resumes the existing game session when reopened.
 
 Pull requests are welcomed! Note that we do not accept contributions that are primarily AI-generated and will close your PR if we suspect as much. Please also see the [code conventions](docs/code-conventions.md).
 

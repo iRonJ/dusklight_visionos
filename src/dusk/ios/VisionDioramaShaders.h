@@ -62,6 +62,22 @@ fragment float4 diorama_fragment_main(
     sampler colorSampler [[sampler(0)]]) {
     return colorTexture.sample(colorSampler, in.uv);
 }
+
+struct DioramaInteractiveFragmentOut {
+    float4 color [[color(0)]];
+    ushort trackingArea [[color(1)]];
+};
+
+fragment DioramaInteractiveFragmentOut diorama_interactive_fragment_main(
+    DioramaVertexOut in [[stage_in]],
+    texture2d<float> colorTexture [[texture(0)]],
+    sampler colorSampler [[sampler(0)]],
+    constant ushort& trackingArea [[buffer(0)]]) {
+    DioramaInteractiveFragmentOut out;
+    out.color = colorTexture.sample(colorSampler, in.uv);
+    out.trackingArea = trackingArea;
+    return out;
+}
 )""";
 
 inline simd_float4x4 MatrixTranslation(float x, float y, float z) {

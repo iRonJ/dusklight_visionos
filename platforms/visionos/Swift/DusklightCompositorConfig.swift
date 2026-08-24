@@ -1,6 +1,7 @@
 #if os(visionOS)
 
 import CompositorServices
+import Metal
 import SwiftUI
 
 struct DusklightCompositorConfig: CompositorLayerConfiguration {
@@ -12,6 +13,11 @@ struct DusklightCompositorConfig: CompositorLayerConfiguration {
         // foveation map with the current explicit per-eye passes warps eye 1
         // as the user's gaze moves.
         configuration.isFoveationEnabled = false
+
+        if capabilities.supportedTrackingAreasFormats.contains(.r16Uint) {
+            configuration.trackingAreasFormat = .r16Uint
+            configuration.trackingAreasUsage = .renderTarget
+        }
 
         let supportedLayouts = capabilities.supportedLayouts(options: [])
 

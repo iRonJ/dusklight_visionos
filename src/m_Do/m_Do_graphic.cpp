@@ -27,6 +27,9 @@
 #include "d/actor/d_a_player.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_debug_viewer.h"
+#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
+#include "dusk/ios/VisionCompositorRenderer.h"
+#endif
 #include "d/d_jcam_editor.h"
 #include "d/d_jpreviewer.h"
 #include "d/d_menu_collect.h"
@@ -817,8 +820,13 @@ void mDoGph_gInf_c::updateRenderSize() {
     u32 width, height;
     AuroraGetRenderSize(&width, &height);
     JUTVideo::getManager()->setRenderSize(width, height);
+#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
+    const float aspect = dusklight_visionos_get_diorama_aspect_ratio();
+    l_tvSize[1].width = static_cast<u16>(aspect * static_cast<float>(l_tvSize[1].height));
+#else
     l_tvSize[1].width = static_cast<u16>(static_cast<float>(width) / static_cast<float>(height) *
                                          static_cast<float>(l_tvSize[1].height));
+#endif
     onWide();
 }
 #endif

@@ -323,7 +323,7 @@
         "CMAKE_TOOLCHAIN_FILE": "ios.toolchain.cmake",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/install",
         "PLATFORM": "VISIONOS",
-        "DEPLOYMENT_TARGET": "2.0",
+        "DEPLOYMENT_TARGET": "26.5",
         "ENABLE_BITCODE": {
           "type": "BOOL",
           "value": false
@@ -376,7 +376,7 @@
         "CMAKE_TOOLCHAIN_FILE": "ios.toolchain.cmake",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/install",
         "PLATFORM": "SIMULATOR_VISIONOS",
-        "DEPLOYMENT_TARGET": "2.0",
+        "DEPLOYMENT_TARGET": "26.5",
         "ENABLE_BITCODE": {
           "type": "BOOL",
           "value": false

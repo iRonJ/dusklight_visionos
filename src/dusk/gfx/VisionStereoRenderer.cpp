@@ -35,6 +35,7 @@ constexpr uint32_t kRightEyeCaptureTag = 0x44535245; // DSRE
 
 std::atomic<const void*> s_compositorToken{nullptr};
 std::atomic<const void*> s_runningCompositorToken{nullptr};
+std::atomic<bool> s_visionAppActive{true};
 
 struct CameraSnapshot {
     lookat_class lookat;
@@ -143,9 +144,13 @@ void SetVisionCompositorRunning(const void* token, bool running) {
         expected, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
 }
 
+void SetVisionAppActive(bool active) {
+    s_visionAppActive.store(active, std::memory_order_release);
+}
+
 bool IsVisionCompositorRunning() {
     const void* current = s_compositorToken.load(std::memory_order_acquire);
-    return current != nullptr &&
+    return s_visionAppActive.load(std::memory_order_acquire) && current != nullptr &&
            s_runningCompositorToken.load(std::memory_order_acquire) == current;
 }
 
@@ -218,6 +223,7 @@ bool RenderVisionStereoFrame() {
 
 void RegisterVisionCompositor(const void*) {}
 void SetVisionCompositorRunning(const void*, bool) {}
+void SetVisionAppActive(bool) {}
 bool IsVisionCompositorRunning() {
     return true;
 }

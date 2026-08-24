@@ -29,6 +29,50 @@ using dusk::vision::MatrixRotationY;
 using dusk::vision::MatrixScale;
 using dusk::vision::MatrixTranslation;
 
+namespace {
+constexpr uint64_t kDioramaTrackingAreaIdentifier = 1;
+constexpr float kDioramaBaseWidth = 1.6f;
+constexpr float kDioramaBaseHeight = 0.9f;
+constexpr float kDioramaBaseDistance = 1.5f;
+
+std::atomic<float> g_dioramaX{0.0f};
+std::atomic<float> g_dioramaY{0.0f};
+std::atomic<float> g_dioramaZ{0.0f};
+std::atomic<float> g_dioramaWidth{kDioramaBaseWidth};
+std::atomic<float> g_dioramaAspect{16.0f / 9.0f};
+std::atomic<uint64_t> g_dioramaPlacementSequence{0};
+std::atomic<uint64_t> g_dioramaRecenterGeneration{0};
+
+struct DioramaPlacement {
+    float x;
+    float y;
+    float z;
+    float width;
+    float aspect;
+};
+
+DioramaPlacement CurrentDioramaPlacement() {
+    for (;;) {
+        const uint64_t before = g_dioramaPlacementSequence.load(std::memory_order_acquire);
+        if ((before & 1) != 0) {
+            continue;
+        }
+
+        DioramaPlacement placement{
+            .x = g_dioramaX.load(std::memory_order_relaxed),
+            .y = g_dioramaY.load(std::memory_order_relaxed),
+            .z = g_dioramaZ.load(std::memory_order_relaxed),
+            .width = g_dioramaWidth.load(std::memory_order_relaxed),
+            .aspect = g_dioramaAspect.load(std::memory_order_relaxed),
+        };
+        const uint64_t after = g_dioramaPlacementSequence.load(std::memory_order_acquire);
+        if (before == after) {
+            return placement;
+        }
+    }
+}
+} // namespace
+
 @interface DusklightVisionRendererHost : NSObject
 
 - (instancetype)initWithLayerRenderer:(cp_layer_renderer_t)layerRenderer;
@@ -45,6 +89,7 @@ using dusk::vision::MatrixTranslation;
     id<MTLDevice> _device;
     id<MTLCommandQueue> _commandQueue;
     id<MTLRenderPipelineState> _pipelineState;
+    id<MTLRenderPipelineState> _interactivePipelineState;
     id<MTLDepthStencilState> _depthState;
     id<MTLSamplerState> _samplerState;
     id<MTLBuffer> _vertexBuffer;
@@ -61,6 +106,7 @@ using dusk::vision::MatrixTranslation;
 
     // Pipeline format tracking - recreate if drawable format changes
     MTLPixelFormat _pipelineColorFormat;
+    MTLPixelFormat _pipelineTrackingFormat;
 
     DusklightDioramaAnchor* _anchor;
     std::thread _renderThread;
@@ -70,6 +116,8 @@ using dusk::vision::MatrixTranslation;
     BOOL _loggedDiagnosticSource;
     BOOL _loggedGameSource;
     simd_float4x4 _worldModelMatrix;
+    simd_float4x4 _anchorReferenceMatrix;
+    uint64_t _lastRecenterGeneration;
 }
 
 - (instancetype)initWithLayerRenderer:(cp_layer_renderer_t)layerRenderer {
@@ -81,11 +129,14 @@ using dusk::vision::MatrixTranslation;
         _commandQueue.label = @"Dusklight VisionCompositor Queue";
         _running.store(false);
         _pipelineColorFormat = MTLPixelFormatInvalid;
+        _pipelineTrackingFormat = MTLPixelFormatInvalid;
         _hasAnchoredInitialPosition = NO;
         _loggedDiagnosticSource = NO;
         _loggedGameSource = NO;
         // Fallback placement (no tracking): 1.5m in front of the world origin
         _worldModelMatrix = MatrixTranslation(0.0f, 0.0f, -1.5f);
+        _anchorReferenceMatrix = matrix_identity_float4x4;
+        _lastRecenterGeneration = g_dioramaRecenterGeneration.load(std::memory_order_acquire);
 
         [self setupGeometry];
         [self setupDiagnosticTexture];
@@ -95,8 +146,10 @@ using dusk::vision::MatrixTranslation;
 }
 
 - (void)setupPipelineForColorFormat:(MTLPixelFormat)colorFormat
-                        depthFormat:(MTLPixelFormat)depthFormat {
-    if (_pipelineColorFormat == colorFormat && _pipelineState != nil) {
+                        depthFormat:(MTLPixelFormat)depthFormat
+                     trackingFormat:(MTLPixelFormat)trackingFormat {
+    if (_pipelineColorFormat == colorFormat && _pipelineTrackingFormat == trackingFormat &&
+        _pipelineState != nil) {
         return; // Already created for this format
     }
 
@@ -114,6 +167,8 @@ using dusk::vision::MatrixTranslation;
 
     id<MTLFunction> vertFunc = [library newFunctionWithName:@"diorama_vertex_main"];
     id<MTLFunction> fragFunc = [library newFunctionWithName:@"diorama_fragment_main"];
+    id<MTLFunction> interactiveFragFunc =
+        [library newFunctionWithName:@"diorama_interactive_fragment_main"];
 
     MTLVertexDescriptor* vertDesc = [MTLVertexDescriptor vertexDescriptor];
     vertDesc.attributes[0].format = MTLVertexFormatFloat3;
@@ -141,6 +196,17 @@ using dusk::vision::MatrixTranslation;
         return;
     }
 
+    _interactivePipelineState = nil;
+    if (trackingFormat != MTLPixelFormatInvalid) {
+        pld.label = @"Dusklight Interactive Diorama Pipeline";
+        pld.fragmentFunction = interactiveFragFunc;
+        pld.colorAttachments[1].pixelFormat = trackingFormat;
+        _interactivePipelineState = [_device newRenderPipelineStateWithDescriptor:pld error:&error];
+        if (!_interactivePipelineState) {
+            NSLog(@"[Dusklight] Failed to create diorama tracking pipeline: %@", error);
+        }
+    }
+
     MTLDepthStencilDescriptor* dsd = [[MTLDepthStencilDescriptor alloc] init];
     // CompositorServices uses reversed Z: clear to the far value and keep the
     // closest fragment so the fallback room and compositor reprojection both
@@ -157,6 +223,7 @@ using dusk::vision::MatrixTranslation;
     _samplerState = [_device newSamplerStateWithDescriptor:sampDesc];
 
     _pipelineColorFormat = colorFormat;
+    _pipelineTrackingFormat = trackingFormat;
 }
 
 - (void)setupGeometry {
@@ -359,12 +426,21 @@ using dusk::vision::MatrixTranslation;
         hasPose = YES;
         cp_drawable_set_device_anchor(drawable, deviceAnchor);
 
+        const uint64_t recenterGeneration =
+            g_dioramaRecenterGeneration.load(std::memory_order_acquire);
+        if (recenterGeneration != _lastRecenterGeneration) {
+            _lastRecenterGeneration = recenterGeneration;
+            _hasAnchoredInitialPosition = NO;
+        }
+
         if (!_hasAnchoredInitialPosition) {
             // Preserve the initial head orientation as well as position so the
             // flat diorama is perpendicular to the user's gaze, not world axes.
-            _worldModelMatrix =
-                simd_mul(originFromDevice, MatrixTranslation(0.0f, 0.0f, -1.5f));
-            simd_float4 targetPos = _worldModelMatrix.columns[3];
+            _anchorReferenceMatrix = originFromDevice;
+            simd_float4x4 initialModel =
+                simd_mul(_anchorReferenceMatrix,
+                         MatrixTranslation(0.0f, 0.0f, -kDioramaBaseDistance));
+            simd_float4 targetPos = initialModel.columns[3];
             _hasAnchoredInitialPosition = YES;
             os_log(OS_LOG_DEFAULT, "[Dusklight] Anchored 3D diorama window in world space at (%.2f, %.2f, %.2f)",
                    targetPos.x, targetPos.y, targetPos.z);
@@ -392,6 +468,21 @@ using dusk::vision::MatrixTranslation;
 
     size_t viewCount = cp_drawable_get_view_count(drawable);
     size_t textureCount = cp_drawable_get_texture_count(drawable);
+    size_t trackingTextureCount = 0;
+    uint16_t trackingRenderValue = 0;
+    if (@available(visionOS 26.0, *)) {
+        trackingTextureCount = cp_drawable_get_tracking_areas_texture_count(drawable);
+        if (trackingTextureCount > 0) {
+            cp_tracking_area_t trackingArea =
+                cp_drawable_add_tracking_area(
+                    drawable,
+                    static_cast<cp_tracking_area_identifier>(kDioramaTrackingAreaIdentifier));
+            if (trackingArea) {
+                trackingRenderValue = cp_tracking_area_get_render_value(trackingArea);
+                cp_tracking_area_add_automatic_hover_effect(trackingArea);
+            }
+        }
+    }
 
     static uint64_t s_visionFrameCount = 0;
     if (++s_visionFrameCount <= 5 || (s_visionFrameCount % 600) == 0) {
@@ -409,9 +500,16 @@ using dusk::vision::MatrixTranslation;
     {
         id<MTLTexture> drawableColor = cp_drawable_get_color_texture(drawable, 0);
         id<MTLTexture> drawableDepth = cp_drawable_get_depth_texture(drawable, 0);
+        id<MTLTexture> drawableTracking = nil;
+        if (@available(visionOS 26.0, *)) {
+            if (trackingTextureCount > 0) {
+                drawableTracking = cp_drawable_get_tracking_areas_texture(drawable, 0);
+            }
+        }
         MTLPixelFormat colorFmt = drawableColor ? drawableColor.pixelFormat : MTLPixelFormatBGRA8Unorm_sRGB;
         MTLPixelFormat depthFmt = drawableDepth ? drawableDepth.pixelFormat : MTLPixelFormatDepth32Float;
-        [self setupPipelineForColorFormat:colorFmt depthFormat:depthFmt];
+        MTLPixelFormat trackingFmt = drawableTracking ? drawableTracking.pixelFormat : MTLPixelFormatInvalid;
+        [self setupPipelineForColorFormat:colorFmt depthFormat:depthFmt trackingFormat:trackingFmt];
     }
 
     // Wrap the stereo IOSurfaces as Metal textures (zero-copy)
@@ -459,7 +557,17 @@ using dusk::vision::MatrixTranslation;
                                 value:rightFrame.readyValue];
     }
 
-    const simd_float4x4 modelMatrix = _worldModelMatrix;
+    const DioramaPlacement placement = CurrentDioramaPlacement();
+    const float width = fmaxf(0.4f, placement.width);
+    const float aspect = fmaxf(1.0f, placement.aspect);
+    const float height = width / aspect;
+    const simd_float4x4 localPlacement = simd_mul(
+        MatrixTranslation(0.0f, 0.0f, -kDioramaBaseDistance),
+        MatrixScale(width / kDioramaBaseWidth, height / kDioramaBaseHeight, 1.0f));
+    const simd_float4x4 anchoredPlacement = simd_mul(_anchorReferenceMatrix, localPlacement);
+    const simd_float4x4 modelMatrix = simd_mul(
+        MatrixTranslation(placement.x, placement.y, placement.z), anchoredPlacement);
+    _worldModelMatrix = modelMatrix;
 
     bool isDedicated = (textureCount == viewCount && viewCount > 1);
     bool isLayered = (textureCount == 1 && viewCount > 1);
@@ -472,21 +580,37 @@ using dusk::vision::MatrixTranslation;
         // Determine which texture and slice to render into
         id<MTLTexture> dstColor = nil;
         id<MTLTexture> dstDepth = nil;
+        id<MTLTexture> dstTracking = nil;
         NSUInteger dstSlice = 0;
 
         if (isDedicated) {
             // Dedicated: separate texture per eye
             dstColor = cp_drawable_get_color_texture(drawable, viewIdx);
             dstDepth = cp_drawable_get_depth_texture(drawable, viewIdx);
+            if (@available(visionOS 26.0, *)) {
+                if (viewIdx < trackingTextureCount) {
+                    dstTracking = cp_drawable_get_tracking_areas_texture(drawable, viewIdx);
+                }
+            }
         } else if (isLayered) {
             // Layered: single array texture, each eye is a slice
             dstColor = cp_drawable_get_color_texture(drawable, 0);
             dstDepth = cp_drawable_get_depth_texture(drawable, 0);
+            if (@available(visionOS 26.0, *)) {
+                if (trackingTextureCount > 0) {
+                    dstTracking = cp_drawable_get_tracking_areas_texture(drawable, 0);
+                }
+            }
             dstSlice = viewIdx;
         } else {
             // Single view fallback
             dstColor = cp_drawable_get_color_texture(drawable, 0);
             dstDepth = cp_drawable_get_depth_texture(drawable, 0);
+            if (@available(visionOS 26.0, *)) {
+                if (trackingTextureCount > 0) {
+                    dstTracking = cp_drawable_get_tracking_areas_texture(drawable, 0);
+                }
+            }
         }
 
         if (!dstColor) continue;
@@ -498,6 +622,16 @@ using dusk::vision::MatrixTranslation;
         passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
         // Transparent clear for passthrough — alpha=0 where we don't draw
         passDesc.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+
+        if (dstTracking && _interactivePipelineState && trackingRenderValue != 0) {
+            passDesc.colorAttachments[1].texture = dstTracking;
+            passDesc.colorAttachments[1].slice = dstSlice;
+            passDesc.colorAttachments[1].loadAction = MTLLoadActionClear;
+            passDesc.colorAttachments[1].storeAction = MTLStoreActionStore;
+            passDesc.colorAttachments[1].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+        } else {
+            dstTracking = nil;
+        }
 
         if (dstDepth) {
             passDesc.depthAttachment.texture = dstDepth;
@@ -531,11 +665,16 @@ using dusk::vision::MatrixTranslation;
         simd_float4x4 viewMatrix = simd_inverse(eyeToWorld);
         simd_float4x4 projMatrix =
             cp_drawable_compute_projection(drawable, cp_axis_direction_convention_right_up_back, viewIdx);
-        [encoder setRenderPipelineState:_pipelineState];
+        [encoder setRenderPipelineState:dstTracking ? _interactivePipelineState : _pipelineState];
         [encoder setDepthStencilState:_depthState];
         [encoder setVertexBuffer:_vertexBuffer offset:0 atIndex:0];
         [encoder setFragmentTexture:srcColor atIndex:0];
         [encoder setFragmentSamplerState:_samplerState atIndex:0];
+        if (dstTracking) {
+            [encoder setFragmentBytes:&trackingRenderValue
+                               length:sizeof(trackingRenderValue)
+                              atIndex:0];
+        }
 
         auto drawQuad = [&](simd_float4x4 localMatrix) {
             const simd_float4x4 worldMatrix = simd_mul(modelMatrix, localMatrix);
@@ -615,6 +754,39 @@ void dusklight_visionos_stop(void) {
         [g_visionHost stop];
         g_visionHost = nil;
     }
+}
+
+void dusklight_visionos_set_app_active(bool active) {
+    dusk::gfx::SetVisionAppActive(active);
+}
+
+bool dusklight_visionos_is_compositor_running(void) {
+    return dusk::gfx::IsVisionCompositorRunning();
+}
+
+void dusklight_visionos_set_diorama_placement(float x, float y, float z,
+                                              float width, float aspectRatio) {
+    g_dioramaPlacementSequence.fetch_add(1, std::memory_order_acq_rel);
+    g_dioramaX.store(x, std::memory_order_relaxed);
+    g_dioramaY.store(y, std::memory_order_relaxed);
+    g_dioramaZ.store(z, std::memory_order_relaxed);
+    g_dioramaWidth.store(fminf(fmaxf(width, 0.4f), 4.0f), std::memory_order_relaxed);
+    g_dioramaAspect.store(fminf(fmaxf(aspectRatio, 4.0f / 3.0f), 64.0f / 27.0f),
+                           std::memory_order_relaxed);
+    g_dioramaPlacementSequence.fetch_add(1, std::memory_order_release);
+}
+
+void dusklight_visionos_recenter_diorama(void) {
+    g_dioramaPlacementSequence.fetch_add(1, std::memory_order_acq_rel);
+    g_dioramaX.store(0.0f, std::memory_order_relaxed);
+    g_dioramaY.store(0.0f, std::memory_order_relaxed);
+    g_dioramaZ.store(0.0f, std::memory_order_relaxed);
+    g_dioramaPlacementSequence.fetch_add(1, std::memory_order_release);
+    g_dioramaRecenterGeneration.fetch_add(1, std::memory_order_acq_rel);
+}
+
+float dusklight_visionos_get_diorama_aspect_ratio(void) {
+    return g_dioramaAspect.load(std::memory_order_acquire);
 }
 
 #endif // TARGET_OS_VISION

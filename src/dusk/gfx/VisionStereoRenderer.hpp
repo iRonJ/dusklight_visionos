@@ -12,6 +12,7 @@ bool RenderVisionStereoFrame();
 // drawable consumer exists, then resume the same game session.
 void RegisterVisionCompositor(const void* token);
 void SetVisionCompositorRunning(const void* token, bool running);
+void SetVisionAppActive(bool active);
 bool IsVisionCompositorRunning();
 
 } // namespace dusk::gfx
