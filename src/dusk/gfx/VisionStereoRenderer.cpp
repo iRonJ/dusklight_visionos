@@ -9,8 +9,10 @@
 #include "JSystem/J3DGraphBase/J3DSys.h"
 #include "SSystem/SComponent/c_API_graphic.h"
 #include "d/d_com_inf_game.h"
+#include "dusk/frame_interpolation.h"
 #include "dusk/gfx/StereoParallax.hpp"
 #include "dusk/logging.h"
+#include "f_op/f_op_camera_mng.h"
 #include "f_pc/f_pc_draw.h"
 #include "f_pc/f_pc_manager.h"
 #include "f_op/f_op_view.h"
@@ -102,12 +104,16 @@ void ApplyEyeCamera(view_class& view, const CameraSnapshot& centerCamera,
 
 bool DrawEye(view_class& view, const CameraSnapshot& centerCamera, float eyeSign,
              float halfEyeOffset, float convergenceDistance, uint32_t width,
-             uint32_t height, uint32_t captureTag, aurora::gfx::CapturedFrame& capture) {
+             uint32_t height, uint32_t captureTag,
+             aurora::gfx::CapturedFrame& capture) {
     if (!aurora::gfx::begin_capture(width, height, captureTag)) {
         return false;
     }
 
     ApplyEyeCamera(view, centerCamera, eyeSign, halfEyeOffset, convergenceDistance);
+    // Re-run camera-dependent actor drawing for each eye. Do not reset the
+    // persistent lists here: simulation-tick drawing prepares scene and menu
+    // packets that presentation-only actor traversal does not recreate.
     fpcM_DrawIterater((fpcM_DrawIteraterFunc)fpcM_Draw);
     cAPIGph_Painter();
 
@@ -144,9 +150,15 @@ bool IsVisionCompositorRunning() {
 }
 
 bool RenderVisionStereoFrame() {
-    view_class* view = dComIfGd_getView();
     auto* stereoPass = GetStereoParallaxPass();
-    if (!view || !stereoPass || !stereoPass->IsEnabled()) {
+    if (!stereoPass || !stereoPass->IsEnabled() || dComIfGp_getWindowNum() == 0) {
+        return false;
+    }
+
+    dDlst_window_c* window = dComIfGp_getWindow(0);
+    camera_process_class* camera = window ? dComIfGp_getCamera(window->getCameraID()) : nullptr;
+    view_class* view = camera ? &camera->view : nullptr;
+    if (!view) {
         return false;
     }
 
@@ -170,6 +182,11 @@ bool RenderVisionStereoFrame() {
                                 convergenceDistance, width, height,
                                 kLeftEyeCaptureTag, left);
     RestoreCamera(*view, centerCamera);
+
+    // The first painter invocation performs the frame's menu/fade updates.
+    // The right eye must render the resulting lists without advancing those
+    // state machines a second time.
+    dusk::frame_interp::set_ui_tick_pending(false);
     const bool rightOk = leftOk && DrawEye(*view, centerCamera, 1.0f, halfEyeOffset,
                                            convergenceDistance, width, height,
                                            kRightEyeCaptureTag, right);
