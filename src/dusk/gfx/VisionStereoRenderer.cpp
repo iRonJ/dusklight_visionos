@@ -214,12 +214,21 @@ bool RenderVisionStereoFrame() {
     RestoreCamera(*view, centerCamera);
     aurora::gfx::set_offscreen_uses_native_logical_size(false);
 
+    static bool captureFailureLogged = false;
     if (!leftOk || !rightOk) {
         // The caller will redraw a complete center-eye frame. The post pass
         // can safely depth-warp that fallback instead of publishing a partial
         // eye capture or freezing on the previous image (which may be a fade).
-        DuskLog.warn("[DuskStereo] Dual-draw capture failed; using center-eye fallback");
+        if (!captureFailureLogged) {
+            captureFailureLogged = true;
+            DuskLog.warn("[DuskStereo] Dual-draw capture failed; using center-eye fallback");
+        }
         return false;
+    }
+
+    if (captureFailureLogged) {
+        captureFailureLogged = false;
+        DuskLog.info("[DuskStereo] Dual-draw capture recovered");
     }
 
     stereoPass->SubmitTrueStereoFrame(left, right);

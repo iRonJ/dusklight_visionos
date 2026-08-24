@@ -118,7 +118,6 @@ DioramaPlacement CurrentDioramaPlacement() {
     BOOL _hasAnchoredInitialPosition;
     BOOL _loggedDiagnosticSource;
     BOOL _loggedGameSource;
-    simd_float4x4 _worldModelMatrix;
     simd_float4x4 _anchorReferenceMatrix;
     uint64_t _lastRecenterGeneration;
 }
@@ -137,8 +136,6 @@ DioramaPlacement CurrentDioramaPlacement() {
             g_hasDioramaAnchorReference.load(std::memory_order_acquire);
         _loggedDiagnosticSource = NO;
         _loggedGameSource = NO;
-        // Fallback placement (no tracking): 1.5m in front of the world origin
-        _worldModelMatrix = MatrixTranslation(0.0f, 0.0f, -1.5f);
         _anchorReferenceMatrix = _hasAnchoredInitialPosition
             ? g_dioramaAnchorReference
             : matrix_identity_float4x4;
@@ -532,13 +529,14 @@ DioramaPlacement CurrentDioramaPlacement() {
         }
     }
 
-    static uint64_t s_visionFrameCount = 0;
-    if (++s_visionFrameCount <= 5 || (s_visionFrameCount % 600) == 0) {
+    static bool s_loggedDrawableConfiguration = false;
+    if (!s_loggedDrawableConfiguration) {
+        s_loggedDrawableConfiguration = true;
         id<MTLTexture> sampleColor = cp_drawable_get_color_texture(drawable, 0);
         os_log(OS_LOG_DEFAULT,
-               "[Dusklight] VisionCompositor frame #%llu: views=%zu textures=%zu tracked=%d "
+               "[Dusklight] VisionCompositor: views=%zu textures=%zu tracked=%d "
                "drawableColorFormat=%lu drawableSize=(%lux%lu) srcSurfaces=(%p,%p) srcSize=(%ux%u)",
-               s_visionFrameCount, viewCount, textureCount, (int)hasPose,
+               viewCount, textureCount, (int)hasPose,
                (unsigned long)sampleColor.pixelFormat,
                (unsigned long)sampleColor.width, (unsigned long)sampleColor.height,
                leftSurf, rightSurf, srcWidth, srcHeight);
@@ -614,7 +612,6 @@ DioramaPlacement CurrentDioramaPlacement() {
         MatrixTranslation(placement.x, placement.y, -distance),
         MatrixScale(width / kDioramaBaseWidth, height / kDioramaBaseHeight, 1.0f));
     const simd_float4x4 modelMatrix = simd_mul(_anchorReferenceMatrix, localPlacement);
-    _worldModelMatrix = modelMatrix;
 
     bool isDedicated = (textureCount == viewCount && viewCount > 1);
     bool isLayered = (textureCount == 1 && viewCount > 1);
@@ -691,7 +688,8 @@ DioramaPlacement CurrentDioramaPlacement() {
 
         id<MTLRenderCommandEncoder> encoder = [cmdBuffer renderCommandEncoderWithDescriptor:passDesc];
         if (!encoder) continue;
-        encoder.label = [NSString stringWithFormat:@"Dusklight Diorama Eye %zu", viewIdx];
+        encoder.label = viewIdx == 0 ? @"Dusklight Diorama Left Eye"
+                                     : @"Dusklight Diorama Right Eye";
 
         cp_view_texture_map_t texMap = cp_view_get_view_texture_map(view);
         MTLViewport vp = cp_view_texture_map_get_viewport(texMap);

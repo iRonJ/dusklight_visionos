@@ -102,7 +102,7 @@ xcrun devicectl device copy to \
   --destination "Documents/game.rvz"
 ```
 
-In the immersive space, pinch the diorama with both hands to move it; change the distance between your hands to resize it proportionally. A quick one-hand pinch cycles between 16:9 and 21:9. The companion window also provides aspect, width, recenter, and resume controls. Dusklight pauses rendering when it becomes inactive and resumes the existing game session when reopened.
+Use the companion window to select the diorama's aspect ratio, change its width and distance, adjust the game world's scene-plane depth, or recenter it in front of you. Direct pinch manipulation of the diorama is not currently supported. Dusklight pauses rendering when it becomes inactive; use **Resume** in the companion window to reopen the immersive space without restarting the game session.
 
 Pull requests are welcomed! Note that we do not accept contributions that are primarily AI-generated and will close your PR if we suspect as much. Please also see the [code conventions](docs/code-conventions.md).
 

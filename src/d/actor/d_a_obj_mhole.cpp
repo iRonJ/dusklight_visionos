@@ -321,6 +321,9 @@ int daObjMHole_c::draw() {
                     #if WIDESCREEN_SUPPORT
                     mDoGph_gInf_c::setWideZoomLightProjection(effect_mtx);
                     #endif
+                    #if TARGET_PC
+                    mDoGph_gInf_c::setStereoLightProjection(effect_mtx, 1.0f);
+                    #endif
                     tex_mtx_info->setEffectMtx(effect_mtx);
                     modelData->simpleCalcMaterial((MtxP)j3dDefaultMtx);
                 }

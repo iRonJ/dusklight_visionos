@@ -4,6 +4,7 @@
 #include <aurora/webgpu.hpp>
 #include <webgpu/webgpu_cpp.h>
 
+#include <array>
 #include <cmath>
 #include <vector>
 
@@ -227,6 +228,10 @@ struct EyeResources {
 #endif
     wgpu::Buffer uniformBuffer;
     wgpu::BindGroup bindGroup;
+    WGPUTextureView boundColorView = nullptr;
+    WGPUTextureView boundDepthView = nullptr;
+    WGPUSampler boundColorSampler = nullptr;
+    WGPUSampler boundDepthSampler = nullptr;
 };
 
 } // namespace
@@ -251,8 +256,6 @@ struct StereoParallaxPass::Impl {
     aurora::gfx::CapturedFrame leftCapture;
     aurora::gfx::CapturedFrame rightCapture;
     bool hasTrueStereoFrame = false;
-
-    bool resourcesReady = false;
 
     void CreateGridMesh() {
         std::vector<float> vertices;
@@ -474,7 +477,14 @@ struct StereoParallaxPass::Impl {
 
         auto createBg = [&](EyeResources& eye, const wgpu::TextureView& colorView,
                             const wgpu::TextureView& depthView) {
-            std::vector<wgpu::BindGroupEntry> bgEntries(5);
+            if (eye.bindGroup && eye.boundColorView == colorView.Get() &&
+                eye.boundDepthView == depthView.Get() &&
+                eye.boundColorSampler == colorSampler.Get() &&
+                eye.boundDepthSampler == depthSampler.Get()) {
+                return;
+            }
+
+            std::array<wgpu::BindGroupEntry, 5> bgEntries{};
             bgEntries[0].binding = 0;
             bgEntries[0].buffer = eye.uniformBuffer;
             bgEntries[0].size = sizeof(UniformBufferData);
@@ -497,6 +507,10 @@ struct StereoParallaxPass::Impl {
             bgDesc.entryCount = static_cast<uint32_t>(bgEntries.size());
             bgDesc.entries = bgEntries.data();
             eye.bindGroup = device.CreateBindGroup(&bgDesc);
+            eye.boundColorView = colorView.Get();
+            eye.boundDepthView = depthView.Get();
+            eye.boundColorSampler = colorSampler.Get();
+            eye.boundDepthSampler = depthSampler.Get();
         };
 
         createBg(leftEye, leftColorView, leftDepthView);
@@ -543,7 +557,6 @@ bool StereoParallaxPass::Initialize(uint32_t width, uint32_t height) {
     m_impl->SetupEyeResources(m_impl->leftEye, m_leftColorSurface, width, height);
     m_impl->SetupEyeResources(m_impl->rightEye, m_rightColorSurface, width, height);
 
-    m_impl->resourcesReady = true;
     m_initialized = true;
     return true;
 }
@@ -561,7 +574,6 @@ void StereoParallaxPass::Shutdown() {
     m_impl->leftCapture = {};
     m_impl->rightCapture = {};
     m_impl->hasTrueStereoFrame = false;
-    m_impl->resourcesReady = false;
 
 #if defined(__APPLE__)
     std::scoped_lock lock(m_appleFrameMutex);
@@ -648,15 +660,6 @@ void StereoParallaxPass::Render(void* encoderPtr) {
     float eyeSep = useTrueStereo ? 0.0f : m_eyeSeparation.load(std::memory_order_relaxed);
     float convDepth = m_convergenceDepth.load(std::memory_order_relaxed);
     float depthSc = m_depthScale.load(std::memory_order_relaxed);
-
-#if defined(__APPLE__)
-    static uint64_t s_stereoRenderCount = 0;
-    if (++s_stereoRenderCount <= 5 || (s_stereoRenderCount % 60) == 0) {
-        os_log(OS_LOG_DEFAULT, "[DuskStereo] Frame #%llu: mode=%{public}s eyeSeparation=%.4f, convergenceDepth=%.4f, depthScale=%.4f, size=(%u x %u)",
-               s_stereoRenderCount, useTrueStereo ? "dual-draw" : "depth-warp",
-               eyeSep, convDepth, depthSc, curWidth, curHeight);
-    }
-#endif
 
     auto* cmdEncoder = static_cast<wgpu::CommandEncoder*>(encoderPtr);
 

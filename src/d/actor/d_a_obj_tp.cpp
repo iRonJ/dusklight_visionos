@@ -41,6 +41,9 @@ static int daObj_Tp_Draw(obj_tp_class* i_this) {
                         #if WIDESCREEN_SUPPORT
                         mDoGph_gInf_c::setWideZoomLightProjection(lightProjMtx);
                         #endif
+                        #if TARGET_PC
+                        mDoGph_gInf_c::setStereoLightProjection(lightProjMtx, 1.0f);
+                        #endif
                         texMtxInfo->setEffectMtx(lightProjMtx);
                         modelData->simpleCalcMaterial(0, (MtxP)j3dDefaultMtx);
                     }

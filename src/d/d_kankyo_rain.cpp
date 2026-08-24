@@ -4458,6 +4458,9 @@ void drawCloudShadow(Mtx drawMtx, u8** tex) {
             #if WIDESCREEN_SUPPORT
             mDoGph_gInf_c::setWideZoomLightProjection(sp120);
             #endif
+            #if TARGET_PC
+            mDoGph_gInf_c::setStereoLightProjection(sp120, scale);
+            #endif
             cMtx_concat(sp120, j3dSys.getViewMtx(), spF0);
 
             rot += 2.0f;
@@ -5439,6 +5442,9 @@ void dKyr_odour_draw(Mtx drawMtx, u8** tex) {
 
     f32 scale = 0.49f;
     C_MTXLightPerspective(sp120, window_cam->view.fovy, window_cam->view.aspect, scale, -scale, 0.5f, 0.5f);
+    #if TARGET_PC
+    mDoGph_gInf_c::setStereoLightProjection(sp120, scale);
+    #endif
     cMtx_concat(sp120, j3dSys.getViewMtx(), spF0);
 
     rot += 2.0f;

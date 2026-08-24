@@ -1977,9 +1977,6 @@ static void retry_captue_frame(view_class* param_0, view_port_class* param_1, in
     s16 width = (int)param_1->width & 0xFFFFFFF8;
     s16 height = (int)param_1->height & 0xFFFFFFF8;
     void* tex = (void*)mDoGph_gInf_c::getFrameBufferTex();
-    u16 var_r24;
-    u16 var_r23;
-
     if (!dComIfGp_isPauseFlag()) {
         if (y_orig < 0) {
             height += y_orig;
@@ -1989,13 +1986,15 @@ static void retry_captue_frame(view_class* param_0, view_port_class* param_1, in
                                                   GX_FALSE, 0);
         }
 
-        var_r24 = width >> 1;
-        var_r23 = height >> 1;
+        const u16 half_width = width >> 1;
+        const u16 half_height = height >> 1;
         GXSetTexCopySrc(x_orig, y_orig_pos, width, height);
 #ifdef TARGET_PC
-        GXSetTexCopyDst(width, height, (GXTexFmt)mDoGph_gInf_c::getFrameBufferTimg()->format, GX_FALSE);
+        GXSetTexCopyDst(half_width, half_height,
+                        (GXTexFmt)mDoGph_gInf_c::getFrameBufferTimg()->format, GX_FALSE);
 #else
-        GXSetTexCopyDst(var_r24, var_r23, (GXTexFmt)mDoGph_gInf_c::getFrameBufferTimg()->format, GX_TRUE);
+        GXSetTexCopyDst(half_width, half_height,
+                        (GXTexFmt)mDoGph_gInf_c::getFrameBufferTimg()->format, GX_TRUE);
 #endif
         GXCopyTex(tex, GX_FALSE);
         GXPixModeSync();
@@ -2319,6 +2318,7 @@ int mDoGph_Painter() {
             j3dSys.setViewMtx(camera_p->view.viewMtx);
             JPADrawInfo draw_info(j3dSys.getViewMtx(), camera_p->view.fovy, camera_p->view.aspect);
             mDoGph_gInf_c::setWideZoomLightProjection(draw_info.mPrjMtx);
+            mDoGph_gInf_c::setStereoLightProjection(draw_info.mPrjMtx, 0.5f);
 #else
             JPADrawInfo draw_info(camera_p->view.viewMtx, camera_p->view.fovy, camera_p->view.aspect);
 #endif
@@ -2507,6 +2507,12 @@ int mDoGph_Painter() {
                 if (!(DEBUG && g_kankyoHIO.navy.field_0x30d != 0 &&
                       dKy_darkworld_check() == TRUE)) {
                     if (g_env_light.is_blure == 0) {
+#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
+                        // Each stereo eye needs its own framebuffer sample before
+                        // projection-textured water and particles consume it.
+                        retry_captue_frame(&camera_p->view, view_port,
+                                           dComIfGp_getCameraZoomForcus(camera_id));
+#endif
                         GX_DEBUG_GROUP(dComIfGd_drawOpaListInvisible);
                         GX_DEBUG_GROUP(dComIfGd_drawXluListInvisible);
                     }
