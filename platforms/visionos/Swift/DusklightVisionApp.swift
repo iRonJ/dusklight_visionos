@@ -33,6 +33,9 @@ func dusklight_visionos_set_diorama_placement(
 @_silgen_name("dusklight_visionos_recenter_diorama")
 func dusklight_visionos_recenter_diorama()
 
+@_silgen_name("dusklight_visionos_set_scene_plane_distance")
+func dusklight_visionos_set_scene_plane_distance(_ distanceMeters: Float)
+
 @MainActor
 final class DioramaInteractionModel: ObservableObject {
     private struct Contact {
@@ -53,16 +56,22 @@ final class DioramaInteractionModel: ObservableObject {
 
     @Published var x = 0.0
     @Published var y = 0.0
-    @Published var z = 0.0
+    @Published var distance = 1.5
+    @Published var scenePlaneDistance = 6.0
     @Published var width = 1.6
     @Published var aspectIndex = 0
 
     private var contacts: [SpatialEventCollection.Event.ID: Contact] = [:]
     private var twoHandStart: TwoHandStart?
     private var suppressTap = false
+    var onQuickPinch: (() -> Void)?
 
     private var aspectRatio: Double {
         aspectIndex == 0 ? 16.0 / 9.0 : 64.0 / 27.0
+    }
+
+    init() {
+        dusklight_visionos_set_scene_plane_distance(Float(scenePlaneDistance))
     }
 
     func handle(_ events: SpatialEventCollection) {
@@ -88,7 +97,11 @@ final class DioramaInteractionModel: ObservableObject {
                    let contact = contacts[event.id],
                    event.timestamp - contact.startTime < 0.45,
                    distance(contact.startPoint, event.location3D) < 0.05 {
-                    cycleAspectRatio()
+                    if let onQuickPinch {
+                        onQuickPinch()
+                    } else {
+                        cycleAspectRatio()
+                    }
                 }
                 contacts.removeValue(forKey: event.id)
             @unknown default:
@@ -116,10 +129,19 @@ final class DioramaInteractionModel: ObservableObject {
         publishPlacement()
     }
 
+    func setDistance(_ newDistance: Double) {
+        distance = min(max(newDistance, 0.75), 5.0)
+        publishPlacement()
+    }
+
+    func setScenePlaneDistance(_ newDistance: Double) {
+        scenePlaneDistance = min(max(newDistance, 1.5), 20.5)
+        dusklight_visionos_set_scene_plane_distance(Float(scenePlaneDistance))
+    }
+
     func recenter() {
         x = 0.0
         y = 0.0
-        z = 0.0
         dusklight_visionos_recenter_diorama()
         publishPlacement()
     }
@@ -142,7 +164,7 @@ final class DioramaInteractionModel: ObservableObject {
                 separation: max(distance(first.point, second.point), 0.02),
                 x: x,
                 y: y,
-                z: z,
+                z: distance,
                 width: width)
             suppressTap = true
         }
@@ -158,7 +180,8 @@ final class DioramaInteractionModel: ObservableObject {
         let scale = distance(first.point, second.point) / start.separation
         x = start.x + Double(currentMidpoint.x - start.midpoint.x)
         y = start.y + Double(currentMidpoint.y - start.midpoint.y)
-        z = start.z + Double(currentMidpoint.z - start.midpoint.z)
+        distance = min(max(
+            start.z - Double(currentMidpoint.z - start.midpoint.z), 0.75), 5.0)
         width = min(max(start.width * scale, 0.6), 3.2)
         publishPlacement()
     }
@@ -171,7 +194,7 @@ final class DioramaInteractionModel: ObservableObject {
 
     private func publishPlacement() {
         dusklight_visionos_set_diorama_placement(
-            Float(x), Float(y), Float(z), Float(width), Float(aspectRatio))
+            Float(x), Float(y), Float(distance), Float(width), Float(aspectRatio))
     }
 
     private func midpoint(_ lhs: Point3D, _ rhs: Point3D) -> Point3D {
@@ -194,6 +217,7 @@ final class VisionSessionModel: ObservableObject {
     @Published var gameStarted = dusklight_visionos_is_game_running()
     @Published var immersiveOpen = false
     @Published var isOpeningImmersive = false
+    @Published var controlsVisible = false
     let interaction = DioramaInteractionModel()
 }
 
@@ -445,6 +469,33 @@ struct DioramaSessionView: View {
                     set: { session.interaction.setWidth($0) }), in: 0.6...3.2)
             }
 
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .foregroundStyle(.secondary)
+                Slider(value: Binding(
+                    get: { session.interaction.distance },
+                    set: { session.interaction.setDistance($0) }), in: 0.75...5.0)
+                Text(session.interaction.distance, format: .number.precision(.fractionLength(1)))
+                    .monospacedDigit()
+                    .frame(width: 34, alignment: .trailing)
+                Text("m")
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 12) {
+                Image(systemName: "square.3.layers.3d")
+                    .foregroundStyle(.secondary)
+                Slider(value: Binding(
+                    get: { session.interaction.scenePlaneDistance },
+                    set: { session.interaction.setScenePlaneDistance($0) }), in: 1.5...20.5)
+                Text(session.interaction.scenePlaneDistance,
+                     format: .number.precision(.fractionLength(1)))
+                    .monospacedDigit()
+                    .frame(width: 34, alignment: .trailing)
+                Text("m")
+                    .foregroundStyle(.secondary)
+            }
+
             HStack {
                 Button(action: { session.interaction.recenter() }) {
                     Label("Recenter", systemImage: "viewfinder")
@@ -460,7 +511,7 @@ struct DioramaSessionView: View {
         }
         .padding(24)
         .frame(minWidth: 340, idealWidth: 400, maxWidth: 560,
-               minHeight: 190, idealHeight: 220, maxHeight: 360)
+               minHeight: 270, idealHeight: 300, maxHeight: 440)
     }
 }
 
@@ -480,11 +531,15 @@ struct DusklightRootView: View {
             }
         }
         .onAppear {
+            session.controlsVisible = true
             session.gameStarted = dusklight_visionos_is_game_running()
             dusklight_visionos_set_app_active(scenePhase == .active)
             if session.gameStarted && !session.immersiveOpen {
                 Task { await resumeImmersiveSpace() }
             }
+        }
+        .onDisappear {
+            session.controlsVisible = false
         }
         .onChange(of: scenePhase) { _, newPhase in
             let active = newPhase == .active
@@ -501,23 +556,64 @@ struct DusklightRootView: View {
     private func resumeImmersiveSpace() async {
         guard session.gameStarted,
               !session.immersiveOpen,
-              !session.isOpeningImmersive else { return }
+              !session.isOpeningImmersive,
+              scenePhase == .active else { return }
         session.isOpeningImmersive = true
+        defer { session.isOpeningImmersive = false }
         dusklight_visionos_set_app_active(true)
-        try? await Task.sleep(nanoseconds: 400_000_000)
-        if dusklight_visionos_is_compositor_running() {
-            session.isOpeningImmersive = false
-            session.immersiveOpen = true
-            logger.info("[DusklightSwift] Existing immersive compositor resumed")
-            return
+        // A layer paused by Home View or a system message normally resumes in
+        // place. Give it time to wake before asking visionOS for a replacement.
+        for _ in 0..<20 {
+            guard !Task.isCancelled, scenePhase == .active else { return }
+            if dusklight_visionos_is_compositor_running() {
+                session.immersiveOpen = true
+                logger.info("[DusklightSwift] Existing immersive compositor resumed")
+                return
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
+        guard !Task.isCancelled, scenePhase == .active else { return }
         let result = await openImmersiveSpace(id: "DusklightImmersiveSpace")
-        session.isOpeningImmersive = false
+        guard !Task.isCancelled, scenePhase == .active else { return }
         if case .opened = result {
             session.immersiveOpen = true
             logger.info("[DusklightSwift] Resumed existing game in immersive space")
         } else {
             logger.info("[DusklightSwift] Immersive resume result: \(String(describing: result))")
+        }
+    }
+}
+
+struct DusklightImmersiveContent: CompositorContent {
+    @ObservedObject var session: VisionSessionModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some CompositorContent {
+        let openControls = openWindow
+        CompositorLayer(configuration: DusklightCompositorConfig()) { layerRenderer in
+            session.interaction.onQuickPinch = { [weak session] in
+                guard let session else { return }
+                if session.controlsVisible {
+                    session.interaction.setAspectIndex(
+                        session.interaction.aspectIndex == 0 ? 1 : 0)
+                } else {
+                    openControls(id: "main")
+                }
+            }
+            layerRenderer.onSpatialEvent = { events in
+                session.interaction.handle(events)
+            }
+            session.immersiveOpen = true
+            dusklight_visionos_set_app_active(true)
+            dusklight_visionos_start(layerRenderer)
+        }
+        .onAppear {
+            session.immersiveOpen = true
+        }
+        .onDisappear {
+            session.immersiveOpen = false
+            session.interaction.resetGesture()
+            dusklight_visionos_set_app_active(false)
         }
     }
 }
@@ -535,22 +631,7 @@ struct DusklightVisionApp: App {
         .windowResizability(.contentMinSize)
 
         ImmersiveSpace(id: "DusklightImmersiveSpace") {
-            CompositorLayer(configuration: DusklightCompositorConfig()) { layerRenderer in
-                layerRenderer.onSpatialEvent = { events in
-                    session.interaction.handle(events)
-                }
-                session.immersiveOpen = true
-                dusklight_visionos_set_app_active(true)
-                dusklight_visionos_start(layerRenderer)
-            }
-            .onAppear {
-                session.immersiveOpen = true
-            }
-            .onDisappear {
-                session.immersiveOpen = false
-                session.interaction.resetGesture()
-                dusklight_visionos_set_app_active(false)
-            }
+            DusklightImmersiveContent(session: session)
         }
         .immersionStyle(selection: $immersionStyle, in: .mixed, .full)
     }

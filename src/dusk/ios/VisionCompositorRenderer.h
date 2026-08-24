@@ -18,8 +18,9 @@ void dusklight_visionos_start(cp_layer_renderer_t layerRenderer);
 void dusklight_visionos_stop(void);
 void dusklight_visionos_set_app_active(bool active);
 bool dusklight_visionos_is_compositor_running(void);
-void dusklight_visionos_set_diorama_placement(float x, float y, float z,
+void dusklight_visionos_set_diorama_placement(float x, float y, float distance,
                                               float width, float aspectRatio);
+void dusklight_visionos_set_scene_plane_distance(float distanceMeters);
 void dusklight_visionos_recenter_diorama(void);
 float dusklight_visionos_get_diorama_aspect_ratio(void);
 

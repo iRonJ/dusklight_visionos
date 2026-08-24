@@ -37,7 +37,7 @@ constexpr float kDioramaBaseDistance = 1.5f;
 
 std::atomic<float> g_dioramaX{0.0f};
 std::atomic<float> g_dioramaY{0.0f};
-std::atomic<float> g_dioramaZ{0.0f};
+std::atomic<float> g_dioramaDistance{kDioramaBaseDistance};
 std::atomic<float> g_dioramaWidth{kDioramaBaseWidth};
 std::atomic<float> g_dioramaAspect{16.0f / 9.0f};
 std::atomic<uint64_t> g_dioramaPlacementSequence{0};
@@ -46,7 +46,7 @@ std::atomic<uint64_t> g_dioramaRecenterGeneration{0};
 struct DioramaPlacement {
     float x;
     float y;
-    float z;
+    float distance;
     float width;
     float aspect;
 };
@@ -61,7 +61,7 @@ DioramaPlacement CurrentDioramaPlacement() {
         DioramaPlacement placement{
             .x = g_dioramaX.load(std::memory_order_relaxed),
             .y = g_dioramaY.load(std::memory_order_relaxed),
-            .z = g_dioramaZ.load(std::memory_order_relaxed),
+            .distance = g_dioramaDistance.load(std::memory_order_relaxed),
             .width = g_dioramaWidth.load(std::memory_order_relaxed),
             .aspect = g_dioramaAspect.load(std::memory_order_relaxed),
         };
@@ -315,7 +315,10 @@ DioramaPlacement CurrentDioramaPlacement() {
             break;
         } else if (state == cp_layer_renderer_state_paused) {
             dusk::gfx::SetVisionCompositorRunning(compositorToken, false);
-            cp_layer_renderer_wait_until_running(_layerRenderer);
+            // Poll instead of blocking in cp_layer_renderer_wait_until_running().
+            // A paused layer can be replaced during a system interruption, and
+            // the owner must be able to stop and join this thread first.
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
 
@@ -368,6 +371,10 @@ DioramaPlacement CurrentDioramaPlacement() {
     cmdBuffer.label = @"VisionCompositor Clear";
 
     size_t textureCount = cp_drawable_get_texture_count(drawable);
+    size_t trackingTextureCount = 0;
+    if (@available(visionOS 26.0, *)) {
+        trackingTextureCount = cp_drawable_get_tracking_areas_texture_count(drawable);
+    }
     for (size_t texIdx = 0; texIdx < textureCount; ++texIdx) {
         id<MTLTexture> color = cp_drawable_get_color_texture(drawable, texIdx);
         if (!color) continue;
@@ -378,6 +385,18 @@ DioramaPlacement CurrentDioramaPlacement() {
         passDesc.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
         if (color.textureType == MTLTextureType2DArray) {
             passDesc.renderTargetArrayLength = color.arrayLength;
+        }
+        if (@available(visionOS 26.0, *)) {
+            if (texIdx < trackingTextureCount) {
+                id<MTLTexture> tracking =
+                    cp_drawable_get_tracking_areas_texture(drawable, texIdx);
+                if (tracking) {
+                    passDesc.colorAttachments[1].texture = tracking;
+                    passDesc.colorAttachments[1].loadAction = MTLLoadActionClear;
+                    passDesc.colorAttachments[1].storeAction = MTLStoreActionStore;
+                    passDesc.colorAttachments[1].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+                }
+            }
         }
         id<MTLTexture> depth = cp_drawable_get_depth_texture(drawable, texIdx);
         if (depth) {
@@ -460,8 +479,12 @@ DioramaPlacement CurrentDioramaPlacement() {
     }
 
     if (!hasPose) {
+        // Once submission has started, xrOS requires the queried drawable to
+        // be presented. Tracking commonly disappears briefly while Home View
+        // or a system message interrupts the immersive space.
+        [self presentClearedDrawable:drawable];
         cp_frame_end_submission(frame);
-        return NO;
+        return YES;
     }
 
     // CompositorServices consumes reverse-Z depth (far, near distances).
@@ -573,12 +596,11 @@ DioramaPlacement CurrentDioramaPlacement() {
     const float width = fmaxf(0.4f, placement.width);
     const float aspect = fmaxf(1.0f, placement.aspect);
     const float height = width / aspect;
+    const float distance = fminf(fmaxf(placement.distance, 0.75f), 5.0f);
     const simd_float4x4 localPlacement = simd_mul(
-        MatrixTranslation(0.0f, 0.0f, -kDioramaBaseDistance),
+        MatrixTranslation(placement.x, placement.y, -distance),
         MatrixScale(width / kDioramaBaseWidth, height / kDioramaBaseHeight, 1.0f));
-    const simd_float4x4 anchoredPlacement = simd_mul(_anchorReferenceMatrix, localPlacement);
-    const simd_float4x4 modelMatrix = simd_mul(
-        MatrixTranslation(placement.x, placement.y, placement.z), anchoredPlacement);
+    const simd_float4x4 modelMatrix = simd_mul(_anchorReferenceMatrix, localPlacement);
     _worldModelMatrix = modelMatrix;
 
     bool isDedicated = (textureCount == viewCount && viewCount > 1);
@@ -746,11 +768,10 @@ void dusklight_visionos_start(cp_layer_renderer_t layerRenderer) {
     }
 
     if (g_visionHost) {
-        // visionOS may invalidate the compositor layer while presenting a
-        // system interruption, then provide a new layer when the immersive
-        // space resumes. Do not block here waiting on a paused old layer;
-        // request its loop to stop and attach the replacement immediately.
-        [g_visionHost requestStop];
+        // A system interruption can replace the compositor layer. Fully join
+        // the old host before releasing it; destroying a joinable std::thread
+        // invokes std::terminate.
+        [g_visionHost stop];
         os_log(OS_LOG_DEFAULT,
                "[Dusklight] Replacing invalidated compositor layer; game engine remains running");
     }
@@ -776,23 +797,33 @@ bool dusklight_visionos_is_compositor_running(void) {
     return dusk::gfx::IsVisionCompositorRunning();
 }
 
-void dusklight_visionos_set_diorama_placement(float x, float y, float z,
+void dusklight_visionos_set_diorama_placement(float x, float y, float distance,
                                               float width, float aspectRatio) {
     g_dioramaPlacementSequence.fetch_add(1, std::memory_order_acq_rel);
     g_dioramaX.store(x, std::memory_order_relaxed);
     g_dioramaY.store(y, std::memory_order_relaxed);
-    g_dioramaZ.store(z, std::memory_order_relaxed);
+    g_dioramaDistance.store(fminf(fmaxf(distance, 0.75f), 5.0f),
+                            std::memory_order_relaxed);
     g_dioramaWidth.store(fminf(fmaxf(width, 0.4f), 4.0f), std::memory_order_relaxed);
     g_dioramaAspect.store(fminf(fmaxf(aspectRatio, 4.0f / 3.0f), 64.0f / 27.0f),
                            std::memory_order_relaxed);
     g_dioramaPlacementSequence.fetch_add(1, std::memory_order_release);
 }
 
+void dusklight_visionos_set_scene_plane_distance(float distanceMeters) {
+    auto* stereoPass = dusk::gfx::GetStereoParallaxPass();
+    if (!stereoPass) return;
+
+    auto settings = stereoPass->GetSettings();
+    const float clampedMeters = fminf(fmaxf(distanceMeters, 1.5f), 20.5f);
+    settings.convergenceDepth = (clampedMeters - 1.5f) / 19.0f;
+    stereoPass->SetSettings(settings);
+}
+
 void dusklight_visionos_recenter_diorama(void) {
     g_dioramaPlacementSequence.fetch_add(1, std::memory_order_acq_rel);
     g_dioramaX.store(0.0f, std::memory_order_relaxed);
     g_dioramaY.store(0.0f, std::memory_order_relaxed);
-    g_dioramaZ.store(0.0f, std::memory_order_relaxed);
     g_dioramaPlacementSequence.fetch_add(1, std::memory_order_release);
     g_dioramaRecenterGeneration.fetch_add(1, std::memory_order_acq_rel);
 }

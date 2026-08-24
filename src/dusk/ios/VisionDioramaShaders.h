@@ -48,6 +48,29 @@ struct DioramaUniforms {
     float4x4 mvp;
 };
 
+inline float4 sample_diorama_color(texture2d<float> colorTexture,
+                                   sampler colorSampler,
+                                   float2 uv) {
+    const float2 textureSize = float2(colorTexture.get_width(), colorTexture.get_height());
+    const float2 uvDx = dfdx(uv);
+    const float2 uvDy = dfdy(uv);
+    const float footprint = max(length(uvDx * textureSize), length(uvDy * textureSize));
+
+    if (footprint <= 1.25f) {
+        return colorTexture.sample(colorSampler, uv);
+    }
+
+    // IOSurface-backed textures have no mip chain. Average across the pixel
+    // footprint when the physical window is smaller or farther away so fine
+    // geometry does not shimmer under head movement.
+    const float2 dx = uvDx * 0.375f;
+    const float2 dy = uvDy * 0.375f;
+    return (colorTexture.sample(colorSampler, uv - dx - dy) +
+            colorTexture.sample(colorSampler, uv + dx - dy) +
+            colorTexture.sample(colorSampler, uv - dx + dy) +
+            colorTexture.sample(colorSampler, uv + dx + dy)) * 0.25f;
+}
+
 vertex DioramaVertexOut diorama_vertex_main(DioramaVertexIn in [[stage_in]],
                                             constant DioramaUniforms& uniforms [[buffer(1)]]) {
     DioramaVertexOut out;
@@ -60,7 +83,7 @@ fragment float4 diorama_fragment_main(
     DioramaVertexOut in [[stage_in]],
     texture2d<float> colorTexture [[texture(0)]],
     sampler colorSampler [[sampler(0)]]) {
-    return colorTexture.sample(colorSampler, in.uv);
+    return sample_diorama_color(colorTexture, colorSampler, in.uv);
 }
 
 struct DioramaInteractiveFragmentOut {
@@ -74,7 +97,7 @@ fragment DioramaInteractiveFragmentOut diorama_interactive_fragment_main(
     sampler colorSampler [[sampler(0)]],
     constant ushort& trackingArea [[buffer(0)]]) {
     DioramaInteractiveFragmentOut out;
-    out.color = colorTexture.sample(colorSampler, in.uv);
+    out.color = sample_diorama_color(colorTexture, colorSampler, in.uv);
     out.trackingArea = trackingArea;
     return out;
 }
