@@ -91,6 +91,9 @@ export VISIONOS_PROVISIONING_PROFILE="$HOME/Library/Developer/Xcode/UserData/Pro
 
 The script rebuilds, embeds the provisioning profile, signs `build/visionos-default/Dusklight.app`, and installs it with `devicectl`. Launch the installed app from the headset's Home View; launching it through `devicectl` is not reliable for an immersive app.
 
+See [visionOS stereoscopic rendering](docs/visionos-rendering.md) for the renderer architecture,
+per-eye GX capture path, IOSurface/Metal handoff, key files, and known effect and lifecycle caveats.
+
 If the document picker cannot access the disc image directly, copy it into the app sandbox:
 
 ```sh

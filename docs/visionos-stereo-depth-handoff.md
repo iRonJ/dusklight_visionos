@@ -1,5 +1,10 @@
 # visionOS "Window into the Scene" Stereo Depth — Handoff
 
+> [!WARNING]
+> This is a historical design and investigation handoff for the original center-eye depth-warp
+> renderer. The production renderer now performs independent left/right GX scene draws. See
+> [visionOS stereoscopic rendering](visionos-rendering.md) for the maintained implementation guide.
+
 ## Status update (post-implementation review)
 
 An initial implementation landed in commit `bcf532c0` (+ companion `extern/aurora` submodule
