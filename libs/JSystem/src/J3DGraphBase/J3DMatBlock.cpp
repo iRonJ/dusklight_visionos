@@ -1878,7 +1878,10 @@ void J3DTexGenBlockPatched::calc(const Mtx modelMtx) {
     Mtx viewMtx;
     for (int i = 0; i < 8; i++) {
         if (mTexMtx[i] != NULL) {
-            u32 texMtxMode = mTexMtx[i]->getTexMtxInfo().mInfo & 0x3f;
+            const u8 texMtxInfo = mTexMtx[i]->getTexMtxInfo().mInfo;
+            u32 texMtxMode = texMtxInfo & 0x3f;
+            MtxP projectionView = J3DGetTexProjectionViewMtx(
+                texMtxInfo & J3DTexMtxInfoFlag_UseProjectionViewOverride);
             mTexCoord[i].resetTexMtxReg();
             switch (texMtxMode) {
             case J3DTexMtxMode_EnvmapBasic:
@@ -1886,9 +1889,9 @@ void J3DTexGenBlockPatched::calc(const Mtx modelMtx) {
             case J3DTexMtxMode_Envmap:
 
                 if (j3dSys.checkFlag(8) == 0) {
-                    MTXConcat(j3dSys.getViewMtx(), modelMtx, viewMtx);
+                    MTXConcat(projectionView, modelMtx, viewMtx);
                 } else {
-                    MTXCopy(j3dSys.getViewMtx(), viewMtx);
+                    MTXCopy(projectionView, viewMtx);
                 }
                 viewMtx[0][3] = 0.0f;
                 viewMtx[1][3] = 0.0f;
@@ -1906,10 +1909,10 @@ void J3DTexGenBlockPatched::calc(const Mtx modelMtx) {
             case J3DTexMtxMode_ViewProjmapBasic:
             case J3DTexMtxMode_ViewProjmap:
                 if (j3dSys.checkFlag(4) == 0) {
-                    MTXConcat(j3dSys.getViewMtx(), modelMtx, viewMtx);
+                    MTXConcat(projectionView, modelMtx, viewMtx);
                     mTexMtx[i]->calc( viewMtx);
                 } else {
-                    mTexMtx[i]->calc(j3dSys.getViewMtx());
+                    mTexMtx[i]->calc(projectionView);
                 }
                 break;
             case J3DTexMtxMode_Unknown5:
@@ -1982,7 +1985,10 @@ void J3DTexGenBlockPatched::calcPostTexMtx(const Mtx modelMtx) {
     Mtx mtx1, mtx2;
     for (int i = 0; i < 8; i++) {
         if (mTexMtx[i] != NULL) {
-            u32 texMtxMode = mTexMtx[i]->getTexMtxInfo().mInfo & 0x3f;
+            const u8 texMtxInfo = mTexMtx[i]->getTexMtxInfo().mInfo;
+            u32 texMtxMode = texMtxInfo & 0x3f;
+            MtxP projectionView = J3DGetTexProjectionViewMtx(
+                texMtxInfo & J3DTexMtxInfoFlag_UseProjectionViewOverride);
             mTexCoord[i].resetTexMtxReg();
             switch (texMtxMode) {
             case J3DTexMtxMode_EnvmapBasic:
@@ -1993,7 +1999,7 @@ void J3DTexGenBlockPatched::calcPostTexMtx(const Mtx modelMtx) {
                 break;
             case J3DTexMtxMode_ProjmapBasic:
             case J3DTexMtxMode_Projmap:
-                PSMTXInverse(j3dSys.getViewMtx(), mtx1);
+                PSMTXInverse(projectionView, mtx1);
                 mTexCoord[i].setTexMtxReg(0);
                 mTexMtx[i]->calcPostTexMtx(mtx1);
                 break;
@@ -2005,7 +2011,7 @@ void J3DTexGenBlockPatched::calcPostTexMtx(const Mtx modelMtx) {
             case J3DTexMtxMode_Unknown5:
             case J3DTexMtxMode_EnvmapOldEffectMtx:
             case J3DTexMtxMode_EnvmapEffectMtx:
-                PSMTXInverse(j3dSys.getViewMtx(), mtx2);
+                PSMTXInverse(projectionView, mtx2);
                 mtx2[0][3] = 0.0f;
                 mtx2[1][3] = 0.0f;
                 mtx2[2][3] = 0.0f;

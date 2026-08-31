@@ -241,16 +241,19 @@ then places the quad in front of that reference. Recenter discards the reference
 one on the next tracked frame. The reference is kept across compositor-layer replacement so opening
 Home View or a notification does not automatically recenter the diorama.
 
-Swift scene phase and compositor state are both forwarded to the engine. If the app or compositor
-is inactive, `m_Do_main.cpp` pauses audio and stops advancing/rendering the game while preserving
-the process and game session. When the layer resumes, the frame timer is reset. If visionOS
+The immersive scene phase, compositor state, and explicit companion-window Pause control are kept as
+independent inputs to the engine gate. If any input suspends the session, `m_Do_main.cpp` pauses audio
+and blocks on a condition variable without advancing or rendering the game. Resume wakes the same
+game thread, resets frame timing, and preserves the current session. If visionOS
 replaces the `LayerRenderer`, the old compositor thread is stopped and joined before its host is
 released; destroying a joinable C++ thread caused an earlier crash.
 
 The companion window is the supported control surface for aspect ratio, physical width, physical
-distance, convergence plane, recenter, and resume. Tracking-area rendering and spatial-event code
-exists for direct manipulation, but direct pinch manipulation of the quad is not currently reliable
-and is not advertised as supported.
+distance, convergence plane, recenter, and explicit Pause/Resume. Manual pause freezes the latest
+diorama frame and remains set across a Home View interruption until Resume is selected. The panel
+closes after eight seconds of inactivity while the game is running; pinching the game quad opens it
+again. Tracking-area rendering and spatial-event code exists for this selection gesture, but direct
+pinch manipulation of the quad is not currently reliable and is not advertised as supported.
 
 ## Projection-textured effects
 
@@ -266,13 +269,16 @@ The current fixes are split across:
 - The water/effect actors that construct their own projection matrices, including the `lv3Water`,
   groundwater, portal, mirror-hole, and related environment paths.
 - `JPADrawInfo`, which applies the same correction to projection-textured particles.
-- A per-eye `retry_captue_frame()` before invisible framebuffer-sampling lists, with copy dimensions
+- A per-eye `retry_capture_frame()` before invisible framebuffer-sampling lists, with copy dimensions
   matching the actual half-resolution framebuffer texture.
 
 These paths are data- and material-dependent. A newly encountered effect that uses texture names
 such as `dummy` or `fbtex_dummy`, an invisible draw list, or its own LightPerspective matrix may
-need the same per-eye correction. Dark sewer water is improved but still has known residual stereo
-error, so this area should not be considered exhaustive.
+need the same per-eye correction. Castle Sewer's `GRDWATER` actor reprojects the rendered scene in a
+way that doubles temporary head-pose rotation. While that actor is loaded, the renderer smoothly
+neutralizes bounded 6DOF head tracking but retains the independent left/right eye draws. Tracking
+smoothly resumes after the actor is removed. This actor-scoped fallback is intentionally conservative,
+and this area should not be considered exhaustive.
 
 ## Key files
 

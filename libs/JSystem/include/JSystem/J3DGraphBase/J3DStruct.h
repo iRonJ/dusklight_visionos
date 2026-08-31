@@ -77,6 +77,12 @@ enum J3DTexMtxMode {
     J3DTexMtxMode_EnvmapEffectMtx,
 };
 
+enum J3DTexMtxInfoFlag {
+    // PC-only extension. The original format masks modes with 0x3f and uses
+    // bit 7 for Maya SRTs, leaving bit 6 available for renderer metadata.
+    J3DTexMtxInfoFlag_UseProjectionViewOverride = 0x40,
+};
+
 /**
  * @ingroup jsystem-j3d
  *

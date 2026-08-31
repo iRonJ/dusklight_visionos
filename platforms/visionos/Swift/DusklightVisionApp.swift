@@ -50,6 +50,12 @@ func dusklight_visionos_is_game_running() -> Bool
 @_silgen_name("dusklight_visionos_set_app_active")
 func dusklight_visionos_set_app_active(_ active: Bool)
 
+@_silgen_name("dusklight_visionos_set_game_paused")
+func dusklight_visionos_set_game_paused(_ paused: Bool)
+
+@_silgen_name("dusklight_visionos_is_game_paused")
+func dusklight_visionos_is_game_paused() -> Bool
+
 @_silgen_name("dusklight_visionos_is_compositor_running")
 func dusklight_visionos_is_compositor_running() -> Bool
 
@@ -245,7 +251,17 @@ final class VisionSessionModel: ObservableObject {
     @Published var immersiveOpen = false
     @Published var isOpeningImmersive = false
     @Published var controlsVisible = false
+    @Published private(set) var gamePaused = dusklight_visionos_is_game_paused()
     let interaction = DioramaInteractionModel()
+
+    func setGamePaused(_ paused: Bool) {
+        gamePaused = paused
+        dusklight_visionos_set_game_paused(paused)
+    }
+
+    func synchronizeGamePause() {
+        gamePaused = dusklight_visionos_is_game_paused()
+    }
 }
 
 struct LauncherView: View {
@@ -465,6 +481,8 @@ struct LauncherView: View {
 struct DioramaSessionView: View {
     @ObservedObject var session: VisionSessionModel
     let resume: () -> Void
+    let interacted: () -> Void
+    let editingChanged: (Bool) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -473,13 +491,17 @@ struct DioramaSessionView: View {
                     .font(.headline)
                 Spacer()
                 Circle()
-                    .fill(session.immersiveOpen ? Color.green : Color.secondary)
+                    .fill(session.gamePaused ? Color.orange :
+                          (session.immersiveOpen ? Color.green : Color.secondary))
                     .frame(width: 8, height: 8)
             }
 
             Picker("Aspect", selection: Binding(
                 get: { session.interaction.aspectIndex },
-                set: { session.interaction.setAspectIndex($0) })) {
+                set: {
+                    interacted()
+                    session.interaction.setAspectIndex($0)
+                })) {
                 Text("16:9").tag(0)
                 Text("21:9").tag(1)
             }
@@ -490,7 +512,8 @@ struct DioramaSessionView: View {
                     .foregroundStyle(.secondary)
                 Slider(value: Binding(
                     get: { session.interaction.width },
-                    set: { session.interaction.setWidth($0) }), in: 0.6...3.2)
+                    set: { session.interaction.setWidth($0) }), in: 0.6...3.2,
+                    onEditingChanged: editingChanged)
             }
 
             HStack(spacing: 12) {
@@ -498,7 +521,8 @@ struct DioramaSessionView: View {
                     .foregroundStyle(.secondary)
                 Slider(value: Binding(
                     get: { session.interaction.distance },
-                    set: { session.interaction.setDistance($0) }), in: 0.75...5.0)
+                    set: { session.interaction.setDistance($0) }), in: 0.75...5.0,
+                    onEditingChanged: editingChanged)
                 Text(session.interaction.distance, format: .number.precision(.fractionLength(1)))
                     .monospacedDigit()
                     .frame(width: 34, alignment: .trailing)
@@ -511,7 +535,8 @@ struct DioramaSessionView: View {
                     .foregroundStyle(.secondary)
                 Slider(value: Binding(
                     get: { session.interaction.scenePlaneDistance },
-                    set: { session.interaction.setScenePlaneDistance($0) }), in: 1.5...20.5)
+                    set: { session.interaction.setScenePlaneDistance($0) }), in: 1.5...20.5,
+                    onEditingChanged: editingChanged)
                 Text(session.interaction.scenePlaneDistance,
                      format: .number.precision(.fractionLength(1)))
                     .monospacedDigit()
@@ -521,12 +546,36 @@ struct DioramaSessionView: View {
             }
 
             HStack {
-                Button(action: { session.interaction.recenter() }) {
+                Button(action: {
+                    interacted()
+                    session.interaction.recenter()
+                }) {
                     Label("Recenter", systemImage: "viewfinder")
                 }
                 Spacer()
-                if !session.immersiveOpen {
-                    Button(action: resume) {
+                if session.gamePaused {
+                    Button {
+                        interacted()
+                        session.setGamePaused(false)
+                        if !session.immersiveOpen {
+                            resume()
+                        }
+                    } label: {
+                        Label("Resume", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else if session.immersiveOpen {
+                    Button {
+                        interacted()
+                        session.setGamePaused(true)
+                    } label: {
+                        Label("Pause", systemImage: "pause.fill")
+                    }
+                } else {
+                    Button(action: {
+                        interacted()
+                        resume()
+                    }) {
                         Label("Resume", systemImage: "play.fill")
                     }
                     .buttonStyle(.borderedProminent)
@@ -536,19 +585,30 @@ struct DioramaSessionView: View {
         .padding(24)
         .frame(minWidth: 340, idealWidth: 400, maxWidth: 560,
                minHeight: 270, idealHeight: 300, maxHeight: 440)
+        .simultaneousGesture(TapGesture().onEnded { interacted() })
     }
 }
 
 struct DusklightRootView: View {
     @ObservedObject var session: VisionSessionModel
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.scenePhase) private var scenePhase
+    @State private var controlsAutoHideTask: Task<Void, Never>?
 
     var body: some View {
         Group {
             if session.gameStarted {
                 DioramaSessionView(session: session) {
                     Task { await resumeImmersiveSpace() }
+                } interacted: {
+                    scheduleControlsAutoHide()
+                } editingChanged: { editing in
+                    if editing {
+                        cancelControlsAutoHide()
+                    } else {
+                        scheduleControlsAutoHide()
+                    }
                 }
             } else {
                 LauncherView(session: session)
@@ -557,24 +617,53 @@ struct DusklightRootView: View {
         .onAppear {
             session.controlsVisible = true
             session.gameStarted = dusklight_visionos_is_game_running()
-            dusklight_visionos_set_app_active(scenePhase == .active)
+            session.synchronizeGamePause()
             if session.gameStarted && !session.immersiveOpen {
                 Task { await resumeImmersiveSpace() }
             }
+            scheduleControlsAutoHide()
         }
         .onDisappear {
+            cancelControlsAutoHide()
             session.controlsVisible = false
         }
         .onChange(of: scenePhase) { _, newPhase in
-            let active = newPhase == .active
-            dusklight_visionos_set_app_active(active)
-            if !active {
-                session.immersiveOpen = false
-                session.interaction.resetGesture()
+            if newPhase != .active {
+                cancelControlsAutoHide()
             } else if session.gameStarted && !session.immersiveOpen {
                 Task { await resumeImmersiveSpace() }
             }
         }
+        .onChange(of: session.gameStarted) { _, _ in
+            scheduleControlsAutoHide()
+        }
+        .onChange(of: session.gamePaused) { _, _ in
+            scheduleControlsAutoHide()
+        }
+        .onChange(of: session.immersiveOpen) { _, _ in
+            scheduleControlsAutoHide()
+        }
+    }
+
+    private func scheduleControlsAutoHide() {
+        cancelControlsAutoHide()
+        guard session.gameStarted, session.immersiveOpen, !session.gamePaused else { return }
+
+        controlsAutoHideTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: 8_000_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, scenePhase == .active,
+                  session.immersiveOpen, !session.gamePaused else { return }
+            dismissWindow(id: "main")
+        }
+    }
+
+    private func cancelControlsAutoHide() {
+        controlsAutoHideTask?.cancel()
+        controlsAutoHideTask = nil
     }
 
     private func resumeImmersiveSpace() async {
@@ -584,7 +673,6 @@ struct DusklightRootView: View {
               scenePhase == .active else { return }
         session.isOpeningImmersive = true
         defer { session.isOpeningImmersive = false }
-        dusklight_visionos_set_app_active(true)
         // A layer paused by Home View or a system message normally resumes in
         // place. Give it time to wake before asking visionOS for a replacement.
         for _ in 0..<20 {
@@ -611,6 +699,7 @@ struct DusklightRootView: View {
 struct DusklightImmersiveContent: CompositorContent {
     @ObservedObject var session: VisionSessionModel
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some CompositorContent {
         let openControls = openWindow
@@ -628,16 +717,27 @@ struct DusklightImmersiveContent: CompositorContent {
                 session.interaction.handle(events)
             }
             session.immersiveOpen = true
-            dusklight_visionos_set_app_active(true)
+            dusklight_visionos_set_app_active(scenePhase == .active)
             dusklight_visionos_start(layerRenderer)
         }
         .onAppear {
             session.immersiveOpen = true
+            dusklight_visionos_set_app_active(scenePhase == .active)
         }
         .onDisappear {
             session.immersiveOpen = false
             session.interaction.resetGesture()
             dusklight_visionos_set_app_active(false)
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            let active = newPhase == .active
+            dusklight_visionos_set_app_active(active)
+            if active {
+                session.immersiveOpen = true
+            } else {
+                session.immersiveOpen = false
+                session.interaction.resetGesture()
+            }
         }
     }
 }

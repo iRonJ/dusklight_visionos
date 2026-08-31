@@ -10,6 +10,11 @@
 
 J3DSys j3dSys;
 
+#if TARGET_PC
+static thread_local Mtx sTexProjectionViewOverride;
+static thread_local bool sHasTexProjectionViewOverride = false;
+#endif
+
 Mtx J3DSys::mCurrentMtx;
 
 Vec J3DSys::mCurrentS;
@@ -17,6 +22,32 @@ Vec J3DSys::mCurrentS;
 Vec J3DSys::mParentS;
 
 J3DTexCoordScaleInfo J3DSys::sTexCoordScaleTable[8];
+
+void J3DSetTexProjectionViewOverride(const Mtx viewMtx) {
+#if TARGET_PC
+    MTXCopy(viewMtx, sTexProjectionViewOverride);
+    sHasTexProjectionViewOverride = true;
+#else
+    (void)viewMtx;
+#endif
+}
+
+void J3DClearTexProjectionViewOverride() {
+#if TARGET_PC
+    sHasTexProjectionViewOverride = false;
+#endif
+}
+
+MtxP J3DGetTexProjectionViewMtx(bool useOverride) {
+#if TARGET_PC
+    if (useOverride && sHasTexProjectionViewOverride) {
+        return sTexProjectionViewOverride;
+    }
+#else
+    (void)useOverride;
+#endif
+    return j3dSys.getViewMtx();
+}
 
 #if TARGET_PC // Original game bug, array is too small.
 static u8 NullTexData[0x20] ATTRIBUTE_ALIGN(32) = {0};

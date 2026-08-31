@@ -17,6 +17,8 @@ extern "C" {
 void dusklight_visionos_start(cp_layer_renderer_t layerRenderer);
 void dusklight_visionos_stop(void);
 void dusklight_visionos_set_app_active(bool active);
+void dusklight_visionos_set_game_paused(bool paused);
+bool dusklight_visionos_is_game_paused(void);
 bool dusklight_visionos_is_compositor_running(void);
 void dusklight_visionos_set_diorama_placement(float x, float y, float distance,
                                               float width, float aspectRatio);

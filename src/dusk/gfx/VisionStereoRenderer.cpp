@@ -12,6 +12,7 @@
 #include "dusk/frame_interpolation.h"
 #include "dusk/gfx/StereoParallax.hpp"
 #include "dusk/logging.h"
+#include "f_op/f_op_actor_mng.h"
 #include "f_op/f_op_camera_mng.h"
 #include "f_op/f_op_overlap_mng.h"
 #include "f_pc/f_pc_draw.h"
@@ -27,6 +28,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <mutex>
 
@@ -42,7 +44,10 @@ constexpr uint32_t kRightEyeCaptureTag = 0x44535245; // DSRE
 
 std::atomic<const void*> s_compositorToken{nullptr};
 std::atomic<const void*> s_runningCompositorToken{nullptr};
-std::atomic<bool> s_visionAppActive{true};
+std::atomic<bool> s_visionAppActive{false};
+std::atomic<bool> s_visionGamePaused{false};
+std::mutex s_visionRunStateMutex;
+std::condition_variable s_visionRunStateChanged;
 thread_local float s_eyeProjectionShift = 0.0f;
 
 std::mutex s_headPoseMutex;
@@ -396,20 +401,32 @@ void ApplyEyeCamera(view_class& view, const CameraSnapshot& centerCamera,
     j3dSys.setViewMtx(view.viewMtx);
 }
 
+void BuildEyeViewMtx(const CameraSnapshot& centerCamera, float eyeSign,
+                     float halfEyeOffset, Mtx viewMtx) {
+    MTXCopy(centerCamera.view, viewMtx);
+    // Translating a camera along its own right axis changes only the first
+    // view-space translation component and preserves authored bank exactly.
+    viewMtx[0][3] -= eyeSign * halfEyeOffset;
+}
+
 bool DrawEye(view_class& view, const CameraSnapshot& centerCamera, float eyeSign,
-             float halfEyeOffset, float convergenceDistance, uint32_t width,
-             uint32_t height, uint32_t captureTag,
+             const CameraSnapshot& projectionCamera, float halfEyeOffset,
+             float convergenceDistance, uint32_t width, uint32_t height, uint32_t captureTag,
              aurora::gfx::CapturedFrame& capture) {
     if (!aurora::gfx::begin_capture(width, height, captureTag)) {
         return false;
     }
 
     ApplyEyeCamera(view, centerCamera, eyeSign, halfEyeOffset, convergenceDistance);
+    Mtx projectionEyeView;
+    BuildEyeViewMtx(projectionCamera, eyeSign, halfEyeOffset, projectionEyeView);
+    J3DSetTexProjectionViewOverride(projectionEyeView);
     // Re-run camera-dependent actor drawing for each eye. Do not reset the
     // persistent lists here: simulation-tick drawing prepares scene and menu
     // packets that presentation-only actor traversal does not recreate.
     fpcM_DrawIterater((fpcM_DrawIteraterFunc)fpcM_Draw);
     cAPIGph_Painter();
+    J3DClearTexProjectionViewOverride();
 
     if (!aurora::gfx::end_capture(capture)) {
         return false;
@@ -441,31 +458,77 @@ float GetVisionStereoProjectionShift() {
 }
 
 void RegisterVisionCompositor(const void* token) {
-    s_compositorToken.store(token, std::memory_order_release);
-    s_runningCompositorToken.store(nullptr, std::memory_order_release);
+    {
+        std::scoped_lock lock(s_visionRunStateMutex);
+        s_compositorToken.store(token, std::memory_order_release);
+        s_runningCompositorToken.store(nullptr, std::memory_order_release);
+    }
+    s_visionRunStateChanged.notify_all();
 }
 
 void SetVisionCompositorRunning(const void* token, bool running) {
-    if (running) {
-        if (s_compositorToken.load(std::memory_order_acquire) == token) {
-            s_runningCompositorToken.store(token, std::memory_order_release);
-        }
+    if (running && s_compositorToken.load(std::memory_order_acquire) == token &&
+        s_runningCompositorToken.load(std::memory_order_acquire) == token) {
+        return;
+    }
+    if (!running && s_runningCompositorToken.load(std::memory_order_acquire) != token) {
         return;
     }
 
-    const void* expected = token;
-    s_runningCompositorToken.compare_exchange_strong(
-        expected, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
+    bool changed = false;
+    std::scoped_lock lock(s_visionRunStateMutex);
+    if (running) {
+        if (s_compositorToken.load(std::memory_order_acquire) == token) {
+            changed = s_runningCompositorToken.exchange(token, std::memory_order_acq_rel) != token;
+        }
+    } else {
+        const void* expected = token;
+        changed = s_runningCompositorToken.compare_exchange_strong(
+            expected, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
+    }
+    if (changed) {
+        s_visionRunStateChanged.notify_all();
+    }
 }
 
 void SetVisionAppActive(bool active) {
-    s_visionAppActive.store(active, std::memory_order_release);
+    {
+        std::scoped_lock lock(s_visionRunStateMutex);
+        if (s_visionAppActive.exchange(active, std::memory_order_acq_rel) == active) {
+            return;
+        }
+    }
+    s_visionRunStateChanged.notify_all();
+}
+
+void SetVisionGamePaused(bool paused) {
+    {
+        std::scoped_lock lock(s_visionRunStateMutex);
+        if (s_visionGamePaused.exchange(paused, std::memory_order_acq_rel) == paused) {
+            return;
+        }
+    }
+    s_visionRunStateChanged.notify_all();
 }
 
 bool IsVisionCompositorRunning() {
     const void* current = s_compositorToken.load(std::memory_order_acquire);
-    return s_visionAppActive.load(std::memory_order_acquire) && current != nullptr &&
+    return current != nullptr &&
            s_runningCompositorToken.load(std::memory_order_acquire) == current;
+}
+
+bool IsVisionGamePaused() {
+    return s_visionGamePaused.load(std::memory_order_acquire);
+}
+
+bool IsVisionGameRunnable() {
+    return s_visionAppActive.load(std::memory_order_acquire) &&
+           !IsVisionGamePaused() && IsVisionCompositorRunning();
+}
+
+void WaitForVisionGameResume() {
+    std::unique_lock lock(s_visionRunStateMutex);
+    s_visionRunStateChanged.wait(lock, [] { return IsVisionGameRunnable(); });
 }
 
 bool RenderVisionStereoFrame() {
@@ -494,10 +557,21 @@ bool RenderVisionStereoFrame() {
     // Composite wipes and loading imagery have no stable world pose. Keep both
     // stereo and head-tracked camera offsets neutral until the scene is ready.
     const bool sceneTransition = fopOvlpM_IsDoingReq() != 0;
+    // GRDWATER projects the already-rendered scene back onto its surface. A
+    // temporary head-pose view changes both that projection and the geometry
+    // consuming it, producing a doubled camera rotation. Ease the bounded
+    // head offset to neutral while the actor exists; independent eye views
+    // remain enabled, so the scene retains correct stereoscopic depth.
+    const bool suppressHeadTracking =
+        fopAcM_SearchByName(fpcNm_GRDWATER_e) != nullptr;
     CameraSnapshot stereoCamera = originalCamera;
     VisionHeadPose headPose{};
-    if (!sceneTransition && ReadVisionHeadPose(headPose)) {
-        ApplyLimitedHeadPose(*view, originalCamera, FilterVisionHeadPose(headPose));
+    const bool hasHeadPose = ReadVisionHeadPose(headPose);
+    if (!sceneTransition && (suppressHeadTracking || hasHeadPose)) {
+        const VisionHeadPose presentationPose =
+            suppressHeadTracking ? VisionHeadPose{.valid = true} : headPose;
+        ApplyLimitedHeadPose(*view, originalCamera,
+                             FilterVisionHeadPose(presentationPose));
         SaveCamera(*view, stereoCamera);
     } else {
         // Resume from the neutral pose after a transition or tracking gap
@@ -513,7 +587,7 @@ bool RenderVisionStereoFrame() {
     aurora::gfx::CapturedFrame left;
     aurora::gfx::CapturedFrame right;
     aurora::gfx::set_offscreen_uses_native_logical_size(true);
-    const bool leftOk = DrawEye(*view, stereoCamera, -1.0f, halfEyeOffset,
+    const bool leftOk = DrawEye(*view, stereoCamera, -1.0f, originalCamera, halfEyeOffset,
                                 convergenceDistance, width, height,
                                 kLeftEyeCaptureTag, left);
     RestoreCamera(*view, stereoCamera);
@@ -522,7 +596,7 @@ bool RenderVisionStereoFrame() {
     // The right eye must render the resulting lists without advancing those
     // state machines a second time.
     dusk::frame_interp::set_ui_tick_pending(false);
-    const bool rightOk = leftOk && DrawEye(*view, stereoCamera, 1.0f, halfEyeOffset,
+    const bool rightOk = leftOk && DrawEye(*view, stereoCamera, 1.0f, originalCamera, halfEyeOffset,
                                            convergenceDistance, width, height,
                                            kRightEyeCaptureTag, right);
     RestoreCamera(*view, originalCamera);
@@ -570,11 +644,19 @@ float GetVisionStereoProjectionShift() {
 void RegisterVisionCompositor(const void*) {}
 void SetVisionCompositorRunning(const void*, bool) {}
 void SetVisionAppActive(bool) {}
+void SetVisionGamePaused(bool) {}
 void PublishVisionHeadPose(const VisionHeadPose&) {}
 void ResetVisionHeadPose() {}
 bool IsVisionCompositorRunning() {
     return true;
 }
+bool IsVisionGamePaused() {
+    return false;
+}
+bool IsVisionGameRunnable() {
+    return true;
+}
+void WaitForVisionGameResume() {}
 } // namespace dusk::gfx
 
 #endif

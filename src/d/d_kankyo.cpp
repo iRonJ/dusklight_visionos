@@ -32,6 +32,9 @@
 #include "JSystem/JKernel/JKRSolidHeap.h"
 #include <cstdlib>
 #include <cstring>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #if TARGET_PC
 #include "dusk/imgui/ImGuiBloomWindow.hpp"
 #include "dusk/settings.h"
@@ -4506,6 +4509,9 @@ void dKy_cloudshadow_scroll(J3DModelData* modelData_p, dKy_tevstr_c* tevstr_p, i
                     &mat_p->getTexGenBlock()->getTexMtx(1)->getTexMtxInfo();
 
                 if (tex_mtx_inf != NULL && g_env_light.mpVrkumoPacket != NULL) {
+#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
+                    tex_mtx_inf->mInfo |= J3DTexMtxInfoFlag_UseProjectionViewOverride;
+#endif
                     tex_mtx_inf->mSRT.mTranslationX = g_env_light.mpVrkumoPacket->field_0x1150;
                     tex_mtx_inf->mSRT.mTranslationY = g_env_light.mpVrkumoPacket->field_0x1154;
                 }
@@ -11443,6 +11449,14 @@ void dKy_bg_MAxx_proc(void* bg_model_p) {
                 if (memcmp(&mat_name[3], "MA00", 4) == 0 || memcmp(&mat_name[3], "MA01", 4) == 0 ||
                     memcmp(&mat_name[3], "MA04", 4) == 0 || memcmp(&mat_name[3], "MA16", 4) == 0)
                 {
+#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
+                    if (memcmp(&mat_name[3], "MA04", 4) != 0 &&
+                        mat_p->getTexGenBlock()->getTexMtx(1) != NULL)
+                    {
+                        mat_p->getTexGenBlock()->getTexMtx(1)->getTexMtxInfo().mInfo |=
+                            J3DTexMtxInfoFlag_UseProjectionViewOverride;
+                    }
+#endif
                     sp5C.r = (u8)g_env_light.mFogDensity;
                     sp5C.g = 0;
                     sp5C.b = 0;

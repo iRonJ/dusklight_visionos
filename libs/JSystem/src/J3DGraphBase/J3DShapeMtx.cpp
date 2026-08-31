@@ -127,6 +127,9 @@ void J3DDifferedTexMtx::loadExecute(f32 const (*param_0)[4]) {
                 tex_mtx_2 = tex_gen_block->getTexMtx(i);
                 J3D_ASSERT_NULLPTR(215, tex_mtx_2 != NULL);
                 tex_mtx_info_1 = &tex_mtx_2->getTexMtxInfo();
+                MtxP projectionView = J3DGetTexProjectionViewMtx(
+                    tex_mtx_info_1->mInfo &
+                    J3DTexMtxInfoFlag_UseProjectionViewOverride);
 
                 u32 sp_4c = tex_mtx_info_1->mInfo & 0x3f;
                 switch (sp_4c) {
@@ -143,7 +146,7 @@ void J3DDifferedTexMtx::loadExecute(f32 const (*param_0)[4]) {
                 }
                 case 2:
                 case 8: {
-                    MTXInverse(j3dSys.getViewMtx(), sp_e8);
+                    MTXInverse(projectionView, sp_e8);
                     MTXConcat(tex_mtx_obj->getMtx(i), sp_e8, sp_e8);
                     mtx = &sp_e8;
                     break;
@@ -157,7 +160,7 @@ void J3DDifferedTexMtx::loadExecute(f32 const (*param_0)[4]) {
                         J3DGetTextureMtxMayaOld(tex_mtx_info_2->mSRT, sp_68);
                     }
                     J3DMtxProjConcat(sp_68, tex_mtx_obj->getEffectMtx(i), sp_e8);
-                    MTXInverse(j3dSys.getViewMtx(), sp_a8);
+                    MTXInverse(projectionView, sp_a8);
                     MTXConcat(sp_e8, sp_a8, sp_e8);
                     sp_e8[0][3] = sp_e8[1][3] = sp_e8[2][3] = 0.0f;
                     mtx = &sp_e8;
@@ -174,7 +177,7 @@ void J3DDifferedTexMtx::loadExecute(f32 const (*param_0)[4]) {
 
                     MTXConcat(sp_68, qMtx, sp_68);
                     J3DMtxProjConcat(sp_68, tex_mtx_obj->getEffectMtx(i), sp_e8);
-                    MTXInverse(j3dSys.getViewMtx(), sp_a8);
+                    MTXInverse(projectionView, sp_a8);
                     MTXConcat(sp_e8, sp_a8, sp_e8);
                     sp_e8[0][3] = sp_e8[1][3] = sp_e8[2][3] = 0.0f;
                     mtx = &sp_e8;
@@ -191,7 +194,7 @@ void J3DDifferedTexMtx::loadExecute(f32 const (*param_0)[4]) {
 
                     MTXConcat(sp_68, qMtx2, sp_68);
                     J3DMtxProjConcat(sp_68, tex_mtx_obj->getEffectMtx(i), sp_e8);
-                    MTXInverse(j3dSys.getViewMtx(), sp_a8);
+                    MTXInverse(projectionView, sp_a8);
                     MTXConcat(sp_e8, sp_a8, sp_e8);
                     sp_e8[0][3] = sp_e8[1][3] = sp_e8[2][3] = 0.0f;
                     mtx = &sp_e8;
@@ -213,6 +216,9 @@ void J3DDifferedTexMtx::loadExecute(f32 const (*param_0)[4]) {
                 J3DTexMtx* tex_mtx = tex_gen_block->getTexMtx(i); // sp_2c
                 J3D_ASSERT_NULLPTR(325, tex_mtx != NULL);
                 tex_mtx_info_1 = &tex_mtx->getTexMtxInfo();
+                MtxP projectionView = J3DGetTexProjectionViewMtx(
+                    tex_mtx_info_1->mInfo &
+                    J3DTexMtxInfoFlag_UseProjectionViewOverride);
 
                 u32 tex_gen_src = tex_mtx_info_1->mInfo & 0x3f; // sp_28
                 switch (tex_gen_src) {
@@ -243,7 +249,7 @@ void J3DDifferedTexMtx::loadExecute(f32 const (*param_0)[4]) {
                     }
 
                     J3DMtxProjConcat(sp_68, tex_mtx_obj->getEffectMtx(i), sp_e8);
-                    MTXInverse(j3dSys.getViewMtx(), sp_a8);
+                    MTXInverse(projectionView, sp_a8);
                     MTXConcat(sp_e8, sp_a8, sp_e8);
                     MTXConcat(sp_e8, param_0, sp_e8);
                     sp_e8[0][3] = sp_e8[1][3] = sp_e8[2][3] = 0.0f;
@@ -261,7 +267,7 @@ void J3DDifferedTexMtx::loadExecute(f32 const (*param_0)[4]) {
 
                     MTXConcat(sp_68, qMtx, sp_68);
                     J3DMtxProjConcat(sp_68, tex_mtx_obj->getEffectMtx(i), sp_e8);
-                    MTXInverse(j3dSys.getViewMtx(), sp_a8);
+                    MTXInverse(projectionView, sp_a8);
                     MTXConcat(sp_e8, sp_a8, sp_e8);
                     MTXConcat(sp_e8, param_0, sp_e8);
                     sp_e8[0][3] = sp_e8[1][3] = sp_e8[2][3] = 0.0f;
@@ -279,7 +285,7 @@ void J3DDifferedTexMtx::loadExecute(f32 const (*param_0)[4]) {
 
                     MTXConcat(sp_68, qMtx2, sp_68);
                     J3DMtxProjConcat(sp_68, tex_mtx_obj->getEffectMtx(i), sp_e8);
-                    MTXInverse(j3dSys.getViewMtx(), sp_a8);
+                    MTXInverse(projectionView, sp_a8);
                     MTXConcat(sp_e8, sp_a8, sp_e8);
                     MTXConcat(sp_e8, param_0, sp_e8);
                     sp_e8[0][3] = sp_e8[1][3] = sp_e8[2][3] = 0.0f;

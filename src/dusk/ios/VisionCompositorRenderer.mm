@@ -580,7 +580,6 @@ void PublishRelativeHeadPose(simd_float4x4 referenceFromOrigin,
                     static_cast<cp_tracking_area_identifier>(kDioramaTrackingAreaIdentifier));
             if (trackingArea) {
                 trackingRenderValue = cp_tracking_area_get_render_value(trackingArea);
-                cp_tracking_area_add_automatic_hover_effect(trackingArea);
             }
         }
     }
@@ -853,6 +852,14 @@ void dusklight_visionos_stop(void) {
 
 void dusklight_visionos_set_app_active(bool active) {
     dusk::gfx::SetVisionAppActive(active);
+}
+
+void dusklight_visionos_set_game_paused(bool paused) {
+    dusk::gfx::SetVisionGamePaused(paused);
+}
+
+bool dusklight_visionos_is_game_paused(void) {
+    return dusk::gfx::IsVisionGamePaused();
 }
 
 bool dusklight_visionos_is_compositor_running(void) {

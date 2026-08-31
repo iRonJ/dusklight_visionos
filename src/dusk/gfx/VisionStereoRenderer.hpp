@@ -24,12 +24,16 @@ bool RenderVisionStereoFrame();
 float GetVisionStereoProjectionShift();
 
 // CompositorServices can pause or replace its layer during system UI
-// interruptions. These functions let the engine stop advancing while no
-// drawable consumer exists, then resume the same game session.
+// interruptions. App activity and the explicit user pause are independent
+// inputs to the engine gate so neither can accidentally clear the other.
 void RegisterVisionCompositor(const void* token);
 void SetVisionCompositorRunning(const void* token, bool running);
 void SetVisionAppActive(bool active);
+void SetVisionGamePaused(bool paused);
 bool IsVisionCompositorRunning();
+bool IsVisionGamePaused();
+bool IsVisionGameRunnable();
+void WaitForVisionGameResume();
 
 // Publishes the latest device pose relative to the diorama's anchor reference.
 // The compositor thread writes it and the game render thread consumes a coherent
