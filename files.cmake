@@ -1531,8 +1531,6 @@ set(DUSK_FILES
         src/dusk/gfx/StereoParallax.cpp
         src/dusk/gfx/VisionStereoRenderer.hpp
         src/dusk/gfx/VisionStereoRenderer.cpp
-        src/dusk/gfx/VisionWaterReflection.hpp
-        src/dusk/gfx/VisionWaterReflection.cpp
 )
 
 set(DUSK_HTTP_BACKEND_FILES

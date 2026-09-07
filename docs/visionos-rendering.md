@@ -301,24 +301,14 @@ while a separate `BG_OBJ` loads `Object/@bg0020.arc`. Its `model0_1.bmd` contain
 texgen mode 9. Looking only at room models misses that overlay entirely. These archive/model names
 identify the verified test case; runtime detection does not hardcode them.
 
-Dusklight provides a dedicated stereoscopic water reflection generator
-(`dusk::gfx::UpdateStereoWaterReflectionTexture()` in `src/dusk/gfx/VisionWaterReflection.cpp`)
-during stereoscopic rendering (`dusk::gfx::IsVisionStereoDrawing()`). Instead of sampling a flat,
-un-mirrored 2D framebuffer screenshot via heavy per-eye resolve passes (`retry_captue_frame()`)
-which collapsed stereoscopic depth and triggered Apple Vision Pro thermal fan spin, Dusklight
-dynamically populates `mDoGph_gInf_c::getFrameBufferTex()` with an environmental reflection map.
-This map combines sky zenith-to-horizon gradients, ambient stage lighting (`g_env_light.bg_amb_col`),
-sun position, and glistening specular glitter scaled by `g_env_light.mWaterSurfaceShineRate`
-("てらてら率"), dynamically adapting across stages (Lake Hylia, Dark World twilight water,
-Castle Sewer groundwater, Lakebed Temple).
-
-The water surface overlay mesh (`model0_1.bmd` in Lake Hylia, `mModel2` in Castle Sewer) samples
-this reflection texture through its hardware indirect texturing pipeline, with coordinates animated
-by `btk` and perturbed by the ripple normal map (`M_WaterIndirect_Fix`). Because the reflection sheen
-is alpha-blended over the authentic base 3D water layer (`model0.bmd`, `mModel1`), submerged terrain
-retains 100% binocular disparity, 6DOF head tracking operates with natural specular movement and zero
-rotation doubling, and GPU overhead is virtually eliminated (zero multi-megapixel resolves, silent fans).
-Flatscreen 2D gameplay retains the standard GameCube refraction overlay.
+Dusklight skips the invisible opaque and translucent reflection/refraction overlay lists
+during stereoscopic rendering (`dusk::gfx::IsVisionStereoDrawing()`), matching the proven
+solution used in TPVR. This reveals the authentic base 3D water layer (`model0.bmd` in Lake Hylia,
+`mModel1` in Castle Sewer) with animated ripples, foam, transparency, and murky underwater fog,
+while eliminating 2D perspective magnification, flat zero-disparity collapse, and redundant per-eye
+framebuffer captures (`retry_captue_frame()`). Because base water geometry does not sample the
+framebuffer, bounded 6DOF head tracking remains fully active without rotation doubling or jitter.
+Flatscreen 2D gameplay retains the standard reflection overlay.
 
 ## Key files
 

@@ -61,7 +61,6 @@
 #include "dusk/endian.h"
 #include "dusk/frame_interpolation.h"
 #include "dusk/gfx/VisionStereoRenderer.hpp"
-#include "dusk/gfx/VisionWaterReflection.hpp"
 #include "dusk/gx_helper.h"
 #include "dusk/imgui/ImGuiConsole.hpp"
 #include "dusk/logging.h"
@@ -694,11 +693,6 @@ void mDoGph_gInf_c::setWideZoomLightProjection(Mtx& m) {
     IF_NOT_DUSK(if (!isWideZoom())) {
         return;
     }
-#if TARGET_PC
-    if (dusk::gfx::IsVisionStereoDrawing()) {
-        return;
-    }
-#endif
 
     f32 temp_f27 = m[0][0];
     f32 temp_f26 = m[0][2];
@@ -2515,13 +2509,11 @@ int mDoGph_Painter() {
                     if (g_env_light.is_blure == 0) {
 #if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
                         // In 2D flatscreen mode, capture framebuffer for water refraction.
-                        // In stereo 3D diorama mode, generate lightweight stereoscopic reflection
-                        // texture to eliminate thermal fan noise while preserving fluid surface ripples.
+                        // In stereo 3D diorama mode, the invisible refraction overlay is
+                        // skipped to preserve true stereoscopic depth and 6DOF head tracking.
                         if (!dusk::gfx::IsVisionStereoDrawing()) {
                             retry_captue_frame(&camera_p->view, view_port,
                                                dComIfGp_getCameraZoomForcus(camera_id));
-                        } else {
-                            dusk::gfx::UpdateStereoWaterReflectionTexture();
                         }
 #endif
                         GX_DEBUG_GROUP(dComIfGd_drawOpaListInvisible);
@@ -2594,13 +2586,7 @@ int mDoGph_Painter() {
                 fapGm_HIO_c::startCpuTimer();
                 #endif
 
-#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
-                if (!dusk::gfx::IsVisionStereoDrawing()) {
-                    retry_captue_frame(&camera_p->view, view_port, dComIfGp_getCameraZoomForcus(camera_id));
-                }
-#else
                 retry_captue_frame(&camera_p->view, view_port, dComIfGp_getCameraZoomForcus(camera_id));
-#endif
 
                 #if DEBUG
                 // "Frame Buffer capture 2nd time (Rendering)"
@@ -2635,9 +2621,6 @@ int mDoGph_Painter() {
                 GX_DEBUG_GROUP(dComIfGd_drawIndScreen);
 
                 if (strcmp(dComIfGp_getStartStageName(), "F_SP124") == 0) {
-#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
-                    if (!dusk::gfx::IsVisionStereoDrawing())
-#endif
                     retry_captue_frame(&camera_p->view, view_port,
                                        dComIfGp_getCameraZoomForcus(camera_id));
                 }
@@ -2678,9 +2661,6 @@ int mDoGph_Painter() {
                     u8 enable = mDoGph_gInf_c::getBloom()->getEnable();
                     GXColor color = *mDoGph_gInf_c::getBloom()->getMonoColor();
                     if (color.a != 0 || enable) {
-#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
-                        if (!dusk::gfx::IsVisionStereoDrawing())
-#endif
                         retry_captue_frame(&camera_p->view, view_port,
                                            dComIfGp_getCameraZoomForcus(camera_id));
                     }
@@ -2701,9 +2681,6 @@ int mDoGph_Painter() {
                 if (g_kankyoHIO.navy.field_0x30d != 0 && dKy_darkworld_check() == TRUE) {
                     dComIfGd_drawOpaListDark();
                     dComIfGd_drawXluListDark();
-#if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
-                    if (!dusk::gfx::IsVisionStereoDrawing())
-#endif
                     retry_captue_frame(&camera_p->view, view_port,
                                        dComIfGp_getCameraZoomForcus(camera_id));
                     dComIfGd_drawOpaListInvisible();
