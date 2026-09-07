@@ -4846,7 +4846,7 @@ bool IsVisionStereoDrawing();
 inline void dComIfGd_drawXluListInvisible() {
     ZoneScoped;
 #ifdef TARGET_PC
-    if (!dusk::getSettings().game.disableWaterRefraction && !dusk::gfx::IsVisionStereoDrawing()) {
+    if (!dusk::getSettings().game.disableWaterRefraction) {
 #endif
         g_dComIfG_gameInfo.drawlist.drawXluListInvisible();
 #ifdef TARGET_PC
@@ -4857,7 +4857,7 @@ inline void dComIfGd_drawXluListInvisible() {
 inline void dComIfGd_drawOpaListInvisible() {
     ZoneScoped;
 #ifdef TARGET_PC
-    if (!dusk::getSettings().game.disableWaterRefraction && !dusk::gfx::IsVisionStereoDrawing()) {
+    if (!dusk::getSettings().game.disableWaterRefraction) {
 #endif
         g_dComIfG_gameInfo.drawlist.drawOpaListInvisible();
 #ifdef TARGET_PC
