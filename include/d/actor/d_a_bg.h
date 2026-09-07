@@ -4,6 +4,10 @@
 #include "f_op/f_op_actor_mng.h"
 #include "d/d_bg_w_kcol.h"
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 class daBg_btkAnm_c {
 public:
     int create(J3DModelData*, J3DAnmTextureSRTKey*, int);
@@ -57,6 +61,10 @@ public:
     inline int execute();
     inline int isDelete();
 
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+    bool samplesFramebuffer() const { return mSamplesFramebuffer; }
+#endif
+
 private:
     /* 0x568 */ u8 field_0x568[0x570 - 0x568];
     /* 0x570 */ daBg_Part mBgParts[6];
@@ -64,6 +72,9 @@ private:
     /* 0x5EC */ dBgWKCol* mpKCol;
     /* 0x5F0 */ u8 field_0x5f0;
     /* 0x5F0 */ u8 field_0x5f1;
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+    bool mSamplesFramebuffer = false;
+#endif
 };
 
 STATIC_ASSERT(sizeof(daBg_c) == 0x5F4);

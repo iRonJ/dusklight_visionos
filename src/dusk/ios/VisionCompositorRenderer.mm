@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <thread>
 
 using dusk::vision::kDioramaIndices;
@@ -43,6 +44,7 @@ std::atomic<float> g_dioramaAspect{16.0f / 9.0f};
 std::atomic<uint64_t> g_dioramaPlacementSequence{0};
 std::atomic<uint64_t> g_dioramaRecenterGeneration{0};
 DusklightDioramaAnchor* g_sharedDioramaAnchor = nil;
+std::mutex g_dioramaAnchorReferenceMutex;
 simd_float4x4 g_dioramaAnchorReference = matrix_identity_float4x4;
 std::atomic<bool> g_hasDioramaAnchorReference{false};
 
@@ -75,30 +77,39 @@ DioramaPlacement CurrentDioramaPlacement() {
     }
 }
 
-void PublishRelativeHeadPose(simd_float4x4 referenceFromOrigin,
-                             simd_float4x4 originFromDevice) {
-    const simd_float4x4 referenceFromDevice =
-        simd_mul(referenceFromOrigin, originFromDevice);
+simd_quatf OrientationFromTransform(simd_float4x4 transform) {
     simd_float3x3 rotation;
-    rotation.columns[0] = simd_make_float3(referenceFromDevice.columns[0].x,
-                                           referenceFromDevice.columns[0].y,
-                                           referenceFromDevice.columns[0].z);
-    rotation.columns[1] = simd_make_float3(referenceFromDevice.columns[1].x,
-                                           referenceFromDevice.columns[1].y,
-                                           referenceFromDevice.columns[1].z);
-    rotation.columns[2] = simd_make_float3(referenceFromDevice.columns[2].x,
-                                           referenceFromDevice.columns[2].y,
-                                           referenceFromDevice.columns[2].z);
-    const simd_quatf orientation = simd_quaternion(rotation);
+    rotation.columns[0] = transform.columns[0].xyz;
+    rotation.columns[1] = transform.columns[1].xyz;
+    rotation.columns[2] = transform.columns[2].xyz;
+    return simd_normalize(simd_quaternion(rotation));
+}
+
+void PublishRelativeHeadPose(simd_float4x4 originFromReferenceDevice,
+                             simd_float4x4 originFromCurrentDevice) {
+    const simd_quatf referenceOrientation =
+        OrientationFromTransform(originFromReferenceDevice);
+    const simd_quatf currentOrientation =
+        OrientationFromTransform(originFromCurrentDevice);
+    const simd_quatf referenceFromOriginOrientation =
+        simd_inverse(referenceOrientation);
+    const simd_quatf relativeOrientation = simd_normalize(
+        simd_mul(referenceFromOriginOrientation, currentOrientation));
+
+    const simd_float3 originTranslation =
+        originFromCurrentDevice.columns[3].xyz -
+        originFromReferenceDevice.columns[3].xyz;
+    const simd_float3 relativeTranslation =
+        simd_act(referenceFromOriginOrientation, originTranslation);
 
     dusk::gfx::PublishVisionHeadPose({
-        .translationX = referenceFromDevice.columns[3].x,
-        .translationY = referenceFromDevice.columns[3].y,
-        .translationZ = referenceFromDevice.columns[3].z,
-        .rotationX = orientation.vector.x,
-        .rotationY = orientation.vector.y,
-        .rotationZ = orientation.vector.z,
-        .rotationW = orientation.vector.w,
+        .translationX = relativeTranslation.x,
+        .translationY = relativeTranslation.y,
+        .translationZ = relativeTranslation.z,
+        .rotationX = relativeOrientation.vector.x,
+        .rotationY = relativeOrientation.vector.y,
+        .rotationZ = relativeOrientation.vector.z,
+        .rotationW = relativeOrientation.vector.w,
         .valid = true,
     });
 }
@@ -148,7 +159,7 @@ void PublishRelativeHeadPose(simd_float4x4 referenceFromOrigin,
     BOOL _loggedDiagnosticSource;
     BOOL _loggedGameSource;
     simd_float4x4 _anchorReferenceMatrix;
-    simd_float4x4 _referenceFromOriginMatrix;
+    simd_float4x4 _headPoseReferenceMatrix;
     uint64_t _lastRecenterGeneration;
 }
 
@@ -162,18 +173,22 @@ void PublishRelativeHeadPose(simd_float4x4 referenceFromOrigin,
         _running.store(false);
         _pipelineColorFormat = MTLPixelFormatInvalid;
         _pipelineTrackingFormat = MTLPixelFormatInvalid;
-        _hasAnchoredInitialPosition =
-            g_hasDioramaAnchorReference.load(std::memory_order_acquire);
+        {
+            std::scoped_lock lock(g_dioramaAnchorReferenceMutex);
+            _hasAnchoredInitialPosition =
+                g_hasDioramaAnchorReference.load(std::memory_order_relaxed);
+            _anchorReferenceMatrix = _hasAnchoredInitialPosition
+                ? g_dioramaAnchorReference
+                : matrix_identity_float4x4;
+            _lastRecenterGeneration =
+                g_dioramaRecenterGeneration.load(std::memory_order_relaxed);
+        }
         _trackingLossHandled = NO;
         _loggedDiagnosticSource = NO;
         _loggedGameSource = NO;
-        _anchorReferenceMatrix = _hasAnchoredInitialPosition
-            ? g_dioramaAnchorReference
+        _headPoseReferenceMatrix = _hasAnchoredInitialPosition
+            ? _anchorReferenceMatrix
             : matrix_identity_float4x4;
-        _referenceFromOriginMatrix = _hasAnchoredInitialPosition
-            ? simd_inverse(_anchorReferenceMatrix)
-            : matrix_identity_float4x4;
-        _lastRecenterGeneration = g_dioramaRecenterGeneration.load(std::memory_order_acquire);
 
         [self setupGeometry];
         [self setupDiagnosticTexture];
@@ -510,16 +525,29 @@ void PublishRelativeHeadPose(simd_float4x4 referenceFromOrigin,
             // Preserve the initial head orientation as well as position so the
             // flat diorama is perpendicular to the user's gaze, not world axes.
             _anchorReferenceMatrix = originFromDevice;
-            _referenceFromOriginMatrix = simd_inverse(_anchorReferenceMatrix);
-            g_dioramaAnchorReference = _anchorReferenceMatrix;
-            g_hasDioramaAnchorReference.store(true, std::memory_order_release);
-            simd_float4x4 initialModel =
-                simd_mul(_anchorReferenceMatrix,
-                         MatrixTranslation(0.0f, 0.0f, -kDioramaBaseDistance));
-            simd_float4 targetPos = initialModel.columns[3];
-            _hasAnchoredInitialPosition = YES;
-            os_log(OS_LOG_DEFAULT, "[Dusklight] Anchored 3D diorama window in world space at (%.2f, %.2f, %.2f)",
-                   targetPos.x, targetPos.y, targetPos.z);
+            // The same captured pose is the zero point for bounded head
+            // tracking. App recenter therefore resets both position and
+            // orientation even when the user is not facing ARKit's world axes.
+            _headPoseReferenceMatrix = originFromDevice;
+            BOOL publishedAnchorReference = NO;
+            {
+                std::scoped_lock lock(g_dioramaAnchorReferenceMutex);
+                if (g_dioramaRecenterGeneration.load(std::memory_order_relaxed) ==
+                    _lastRecenterGeneration) {
+                    g_dioramaAnchorReference = _anchorReferenceMatrix;
+                    g_hasDioramaAnchorReference.store(true, std::memory_order_relaxed);
+                    publishedAnchorReference = YES;
+                }
+            }
+            _hasAnchoredInitialPosition = publishedAnchorReference;
+            if (publishedAnchorReference) {
+                simd_float4x4 initialModel =
+                    simd_mul(_anchorReferenceMatrix,
+                             MatrixTranslation(0.0f, 0.0f, -kDioramaBaseDistance));
+                simd_float4 targetPos = initialModel.columns[3];
+                os_log(OS_LOG_DEFAULT, "[Dusklight] Anchored 3D diorama window in world space at (%.2f, %.2f, %.2f)",
+                       targetPos.x, targetPos.y, targetPos.z);
+            }
         }
 
         // Recenter can be requested from the companion-window thread while a
@@ -527,7 +555,7 @@ void PublishRelativeHeadPose(simd_float4x4 referenceFromOrigin,
         // the old anchor after that request; the next frame will reanchor.
         if (g_dioramaRecenterGeneration.load(std::memory_order_acquire) ==
             _lastRecenterGeneration) {
-            PublishRelativeHeadPose(_referenceFromOriginMatrix, originFromDevice);
+            PublishRelativeHeadPose(_headPoseReferenceMatrix, originFromDevice);
             if (g_dioramaRecenterGeneration.load(std::memory_order_acquire) ==
                 _lastRecenterGeneration) {
                 _trackingLossHandled = NO;
@@ -846,7 +874,10 @@ void dusklight_visionos_stop(void) {
     }
     [g_sharedDioramaAnchor stop];
     g_sharedDioramaAnchor = nil;
-    g_hasDioramaAnchorReference.store(false, std::memory_order_release);
+    {
+        std::scoped_lock lock(g_dioramaAnchorReferenceMutex);
+        g_hasDioramaAnchorReference.store(false, std::memory_order_relaxed);
+    }
     dusk::gfx::ResetVisionHeadPose();
 }
 
@@ -894,8 +925,11 @@ void dusklight_visionos_recenter_diorama(void) {
     g_dioramaX.store(0.0f, std::memory_order_relaxed);
     g_dioramaY.store(0.0f, std::memory_order_relaxed);
     g_dioramaPlacementSequence.fetch_add(1, std::memory_order_release);
-    g_hasDioramaAnchorReference.store(false, std::memory_order_release);
-    g_dioramaRecenterGeneration.fetch_add(1, std::memory_order_acq_rel);
+    {
+        std::scoped_lock lock(g_dioramaAnchorReferenceMutex);
+        g_hasDioramaAnchorReference.store(false, std::memory_order_relaxed);
+        g_dioramaRecenterGeneration.fetch_add(1, std::memory_order_release);
+    }
     dusk::gfx::ResetVisionHeadPose();
 }
 

@@ -17,6 +17,9 @@
 #include "JSystem/JKernel/JKRSolidHeap.h"
 #include "JSystem/J3DGraphAnimator/J3DMaterialAnm.h"
 #include <cstring>
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+#include "dusk/gfx/VisionStereoRenderer.hpp"
+#endif
 
 const char* daBg_c::setArcName() {
     static char arcName[32];
@@ -128,6 +131,10 @@ int daBg_c::createHeap() {
     int roomNo = fopAcM_GetParam(this);
     daBg_Part* bgPart = mBgParts;
 
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+    mSamplesFramebuffer = false;
+#endif
+
     for (int i = 0; i < 6; i++) {
         J3DModelData* modelData = (J3DModelData*)dComIfG_getStageRes(arcName, l_modelName[i]);
         if (modelData == NULL) {
@@ -136,6 +143,9 @@ int daBg_c::createHeap() {
 
         if (modelData != NULL) {
             mDoExt_setupStageTexture(modelData);
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+            mSamplesFramebuffer |= dusk::gfx::ModelUsesVisionFramebufferProjection(modelData);
+#endif
             u32 modelFlags = 0x11000084;
 
             for (u16 j = 0; j < modelData->getMaterialNum(); j++) {

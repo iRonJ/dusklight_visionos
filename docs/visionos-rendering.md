@@ -39,9 +39,11 @@ fallback when a complete dual-eye capture cannot be produced.
 
 ARKit head pose keeps the diorama quad stable in world space and gives Compositor Services a device
 anchor for late reprojection. On the `visionos-limited-6dof` branch, the compositor also publishes
-the device transform relative to the current diorama anchor. The GX renderer maps that relative
-translation and orientation into the game's presentation-camera basis before applying the left and
-right eye offsets.
+the device transform relative to the pose captured by the app's Recenter command. Translation is
+computed in that captured orientation's local basis, and rotation is
+`inverse(recenter orientation) * current orientation`, so the captured pose is neutral regardless
+of its angle in ARKit world space. The GX renderer maps that relative translation and orientation
+into the game's presentation-camera basis before applying the left and right eye offsets.
 
 For comfort, this is deliberately not an unrestricted VR camera:
 
@@ -274,11 +276,39 @@ The current fixes are split across:
 
 These paths are data- and material-dependent. A newly encountered effect that uses texture names
 such as `dummy` or `fbtex_dummy`, an invisible draw list, or its own LightPerspective matrix may
-need the same per-eye correction. Castle Sewer's `GRDWATER` actor reprojects the rendered scene in a
-way that doubles temporary head-pose rotation. While that actor is loaded, the renderer smoothly
-neutralizes bounded 6DOF head tracking but retains the independent left/right eye draws. Tracking
-smoothly resumes after the actor is removed. This actor-scoped fallback is intentionally conservative,
-and this area should not be considered exhaustive.
+need the same per-eye correction. Texture matrices that cancel view space must use the inverse of
+the **actual eye view**, including head pose. Using the neutral projection-view override for that
+inverse leaves an `inverse(neutral view) * tracked view` residual, making the projected effect move
+with the user's head even within a single eye. The neutral override remains available for forward
+construction of authored environment projections; it must not replace view-space cancellation.
+
+The camera fallback covers Castle Sewer's `GRDWATER` actor and loaded background models with
+`dummy`/`fbtex_dummy` framebuffer textures or `MA02`/`MA10` projection materials. Both the room actor
+(`daBg_c::createHeap()`) and separate background objects (`daBgObj_c::CreateHeap()`) classify their
+models once, after texture sharing. All model variants participate, even if not currently visible.
+Before either eye draws, the stereo renderer checks the loaded actors and
+smoothly neutralizes bounded 6DOF offsets when necessary, while retaining independent stereo draws.
+The lock lasts until the affected actors/rooms unload, including while water is offscreen, to prevent
+camera-policy flicker. Normal controller-driven game camera movement and compositor world anchoring
+remain active. Ordinary water without these effects retains head tracking. State changes emit one
+`[DuskStereo] Framebuffer-water camera lock` message with the stage, room, and actor ID for validation.
+This is a conservative compatibility fallback, not a complete reconstruction of every legacy water
+effect; new framebuffer-sampling actor types still require validation.
+
+Lake Hylia is an important coverage test: `F_SP115/R00_00.arc` contains ordinary `MA06`/`MA09` water,
+while a separate `BG_OBJ` loads `Object/@bg0020.arc`. Its `model0_1.bmd` contains
+`cc_MA02_IndirectWater_v`, uses `fbtex_dummy` plus `M_WaterIndirect_Fix`, and has view-projection
+texgen mode 9. Looking only at room models misses that overlay entirely. These archive/model names
+identify the verified test case; runtime detection does not hardcode them.
+
+Dusklight skips the invisible opaque and translucent reflection/refraction overlay lists
+during stereoscopic rendering (`dusk::gfx::IsVisionStereoDrawing()`), matching the proven
+solution used in TPVR. This reveals the authentic base 3D water layer (`model0.bmd` in Lake Hylia,
+`mModel1` in Castle Sewer) with animated ripples, foam, transparency, and murky underwater fog,
+while eliminating 2D perspective magnification, flat zero-disparity collapse, and redundant per-eye
+framebuffer captures (`retry_captue_frame()`). Because base water geometry does not sample the
+framebuffer, bounded 6DOF head tracking remains fully active without rotation doubling or jitter.
+Flatscreen 2D gameplay retains the standard reflection overlay.
 
 ## Key files
 

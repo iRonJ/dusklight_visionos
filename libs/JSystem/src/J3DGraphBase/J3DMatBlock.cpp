@@ -1985,10 +1985,7 @@ void J3DTexGenBlockPatched::calcPostTexMtx(const Mtx modelMtx) {
     Mtx mtx1, mtx2;
     for (int i = 0; i < 8; i++) {
         if (mTexMtx[i] != NULL) {
-            const u8 texMtxInfo = mTexMtx[i]->getTexMtxInfo().mInfo;
-            u32 texMtxMode = texMtxInfo & 0x3f;
-            MtxP projectionView = J3DGetTexProjectionViewMtx(
-                texMtxInfo & J3DTexMtxInfoFlag_UseProjectionViewOverride);
+            u32 texMtxMode = mTexMtx[i]->getTexMtxInfo().mInfo & 0x3f;
             mTexCoord[i].resetTexMtxReg();
             switch (texMtxMode) {
             case J3DTexMtxMode_EnvmapBasic:
@@ -1999,7 +1996,9 @@ void J3DTexGenBlockPatched::calcPostTexMtx(const Mtx modelMtx) {
                 break;
             case J3DTexMtxMode_ProjmapBasic:
             case J3DTexMtxMode_Projmap:
-                PSMTXInverse(projectionView, mtx1);
+                // Post-texture input is in the actual eye's view space. Undo
+                // that view, including head pose, before world projection.
+                PSMTXInverse(j3dSys.getViewMtx(), mtx1);
                 mTexCoord[i].setTexMtxReg(0);
                 mTexMtx[i]->calcPostTexMtx(mtx1);
                 break;
@@ -2011,7 +2010,7 @@ void J3DTexGenBlockPatched::calcPostTexMtx(const Mtx modelMtx) {
             case J3DTexMtxMode_Unknown5:
             case J3DTexMtxMode_EnvmapOldEffectMtx:
             case J3DTexMtxMode_EnvmapEffectMtx:
-                PSMTXInverse(projectionView, mtx2);
+                PSMTXInverse(j3dSys.getViewMtx(), mtx2);
                 mtx2[0][3] = 0.0f;
                 mtx2[1][3] = 0.0f;
                 mtx2[2][3] = 0.0f;

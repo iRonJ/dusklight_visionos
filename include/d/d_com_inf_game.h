@@ -4837,10 +4837,16 @@ inline void dComIfGd_drawXluListDark() {
     g_dComIfG_gameInfo.drawlist.drawXluListDark();
 }
 
+#ifdef TARGET_PC
+namespace dusk::gfx {
+bool IsVisionStereoDrawing();
+}
+#endif
+
 inline void dComIfGd_drawXluListInvisible() {
     ZoneScoped;
 #ifdef TARGET_PC
-    if (!dusk::getSettings().game.disableWaterRefraction) {
+    if (!dusk::getSettings().game.disableWaterRefraction && !dusk::gfx::IsVisionStereoDrawing()) {
 #endif
         g_dComIfG_gameInfo.drawlist.drawXluListInvisible();
 #ifdef TARGET_PC
@@ -4851,11 +4857,11 @@ inline void dComIfGd_drawXluListInvisible() {
 inline void dComIfGd_drawOpaListInvisible() {
     ZoneScoped;
 #ifdef TARGET_PC
-    if (!dusk::getSettings().game.disableWaterRefraction) {
+    if (!dusk::getSettings().game.disableWaterRefraction && !dusk::gfx::IsVisionStereoDrawing()) {
 #endif
         g_dComIfG_gameInfo.drawlist.drawOpaListInvisible();
 #ifdef TARGET_PC
-        }
+    }
 #endif
 }
 

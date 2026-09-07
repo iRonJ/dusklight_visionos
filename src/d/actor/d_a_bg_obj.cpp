@@ -14,6 +14,9 @@
 #include "d/actor/d_a_set_bgobj.h"
 #include "d/d_s_play.h"
 #include "dusk/string.hpp"
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+#include "dusk/gfx/VisionStereoRenderer.hpp"
+#endif
 
 static const char* getBmdName(int param_0, int param_1) {
     static char l_bmdName[16];
@@ -677,7 +680,25 @@ int daBgObj_c::CreateHeap() {
         field_0xd02 = 1;
     }
 
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+    mSamplesFramebuffer = false;
+    const int result = (this->*mCreateHeapFunc[mSpecData.mSpecType])();
+    if (result != 0) {
+        // Both heap paths finish texture sharing before returning. Check all
+        // variants, including the separate refraction model used by @bg0020.
+        for (const auto& variants : field_0x5a8) {
+            for (auto* model : variants) {
+                if (model != nullptr) {
+                    mSamplesFramebuffer |=
+                        dusk::gfx::ModelUsesVisionFramebufferProjection(model->getModelData());
+                }
+            }
+        }
+    }
+    return result;
+#else
     return (this->*mCreateHeapFunc[mSpecData.mSpecType])();
+#endif
 }
 
 int daBgObj_c::create1st() {

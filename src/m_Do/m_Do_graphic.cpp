@@ -2508,10 +2508,13 @@ int mDoGph_Painter() {
                       dKy_darkworld_check() == TRUE)) {
                     if (g_env_light.is_blure == 0) {
 #if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
-                        // Each stereo eye needs its own framebuffer sample before
-                        // projection-textured water and particles consume it.
-                        retry_captue_frame(&camera_p->view, view_port,
-                                           dComIfGp_getCameraZoomForcus(camera_id));
+                        // In 2D flatscreen mode, capture framebuffer for water refraction.
+                        // In stereo 3D diorama mode, the invisible refraction overlay is
+                        // skipped to preserve true stereoscopic depth and 6DOF head tracking.
+                        if (!dusk::gfx::IsVisionStereoDrawing()) {
+                            retry_captue_frame(&camera_p->view, view_port,
+                                               dComIfGp_getCameraZoomForcus(camera_id));
+                        }
 #endif
                         GX_DEBUG_GROUP(dComIfGd_drawOpaListInvisible);
                         GX_DEBUG_GROUP(dComIfGd_drawXluListInvisible);

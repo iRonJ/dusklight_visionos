@@ -8,6 +8,8 @@
 
 #include "JSystem/J3DGraphBase/J3DSys.h"
 #include "SSystem/SComponent/c_API_graphic.h"
+#include "d/actor/d_a_bg.h"
+#include "d/actor/d_a_bg_obj.h"
 #include "d/d_com_inf_game.h"
 #include "dusk/frame_interpolation.h"
 #include "dusk/gfx/StereoParallax.hpp"
@@ -75,6 +77,20 @@ struct HeadPoseFilterState {
 };
 
 thread_local HeadPoseFilterState s_headPoseFilter;
+
+void* FindFramebufferWater(void* actor, void*) {
+    auto* actorAc = static_cast<fopAc_ac_c*>(actor);
+    switch (fopAcM_GetName(actorAc)) {
+    case fpcNm_GRDWATER_e:
+        return actor;
+    case fpcNm_BG_e:
+        return static_cast<daBg_c*>(actorAc)->samplesFramebuffer() ? actor : nullptr;
+    case fpcNm_BG_OBJ_e:
+        return static_cast<daBgObj_c*>(actorAc)->samplesFramebuffer() ? actor : nullptr;
+    default:
+        return nullptr;
+    }
+}
 
 struct CameraSnapshot {
     lookat_class lookat;
@@ -436,6 +452,36 @@ bool DrawEye(view_class& view, const CameraSnapshot& centerCamera, float eyeSign
 
 } // namespace
 
+bool ModelUsesVisionFramebufferProjection(J3DModelData* modelData) {
+    if (modelData == nullptr) {
+        return false;
+    }
+    // These aliases are replaced with the scene capture by dRes_info_c.
+    J3DTexture* texture = modelData->getTexture();
+    JUTNameTab* textureNames = modelData->getTextureName();
+    if (texture != nullptr && textureNames != nullptr) {
+        for (u16 i = 0; i < texture->getNum(); ++i) {
+            const char* name = textureNames->getName(i);
+            if (name != nullptr &&
+                (std::strcmp(name, "dummy") == 0 || std::strcmp(name, "fbtex_dummy") == 0)) {
+                return true;
+            }
+        }
+    }
+
+    JUTNameTab* materialNames = modelData->getMaterialName();
+    if (materialNames != nullptr) {
+        for (u16 i = 0; i < modelData->getMaterialNum(); ++i) {
+            const char* name = materialNames->getName(i);
+            if (name != nullptr && std::strlen(name) >= 7 &&
+                (std::memcmp(name + 3, "MA02", 4) == 0 || std::memcmp(name + 3, "MA10", 4) == 0)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void PublishVisionHeadPose(const VisionHeadPose& pose) {
     if (!pose.valid || !IsFinite(pose)) {
         ResetVisionHeadPose();
@@ -531,12 +577,23 @@ void WaitForVisionGameResume() {
     s_visionRunStateChanged.wait(lock, [] { return IsVisionGameRunnable(); });
 }
 
+static std::atomic<bool> s_isVisionStereoDrawing{false};
+
+bool IsVisionStereoDrawing() {
+    return s_isVisionStereoDrawing.load(std::memory_order_relaxed);
+}
+
 bool RenderVisionStereoFrame() {
     s_eyeProjectionShift = 0.0f;
     auto* stereoPass = GetStereoParallaxPass();
     if (!stereoPass || !stereoPass->IsEnabled() || dComIfGp_getWindowNum() == 0) {
         return false;
     }
+
+    struct StereoDrawingGuard {
+        StereoDrawingGuard() { s_isVisionStereoDrawing.store(true, std::memory_order_release); }
+        ~StereoDrawingGuard() { s_isVisionStereoDrawing.store(false, std::memory_order_release); }
+    } stereoGuard;
 
     dDlst_window_c* window = dComIfGp_getWindow(0);
     camera_process_class* camera = window ? dComIfGp_getCamera(window->getCameraID()) : nullptr;
@@ -557,13 +614,21 @@ bool RenderVisionStereoFrame() {
     // Composite wipes and loading imagery have no stable world pose. Keep both
     // stereo and head-tracked camera offsets neutral until the scene is ready.
     const bool sceneTransition = fopOvlpM_IsDoingReq() != 0;
-    // GRDWATER projects the already-rendered scene back onto its surface. A
-    // temporary head-pose view changes both that projection and the geometry
-    // consuming it, producing a doubled camera rotation. Ease the bounded
-    // head offset to neutral while the actor exists; independent eye views
-    // remain enabled, so the scene retains correct stereoscopic depth.
-    const bool suppressHeadTracking =
-        fopAcM_SearchByName(fpcNm_GRDWATER_e) != nullptr;
+    // With invisible 2D refraction overlays skipped in stereo drawing, the
+    // rendered water is the clean base 3D mesh (model0.bmd in Lake Hylia,
+    // mModel1 in Castle Sewer). Because base water does not sample or project
+    // the 2D framebuffer, it produces zero rotation doubling or jitter under
+    // head movement. Bounded 6DOF head tracking remains fully active everywhere.
+    auto* framebufferWater = fopAcM_Search(FindFramebufferWater, nullptr);
+    const bool suppressHeadTracking = false;
+    static bool wasHeadTrackingSuppressed = false;
+    if (suppressHeadTracking != wasHeadTrackingSuppressed) {
+        wasHeadTrackingSuppressed = suppressHeadTracking;
+        DuskLog.info("[DuskStereo] Framebuffer-water camera lock {} (stage={}, room={}, actor={})",
+                     suppressHeadTracking ? "enabled" : "released",
+                     dComIfGp_getStartStageName(), dComIfGp_roomControl_getStayNo(),
+                     framebufferWater ? fopAcM_GetName(framebufferWater) : -1);
+    }
     CameraSnapshot stereoCamera = originalCamera;
     VisionHeadPose headPose{};
     const bool hasHeadPose = ReadVisionHeadPose(headPose);
@@ -637,8 +702,16 @@ bool RenderVisionStereoFrame() {
     return false;
 }
 
+bool IsVisionStereoDrawing() {
+    return false;
+}
+
 float GetVisionStereoProjectionShift() {
     return 0.0f;
+}
+
+bool ModelUsesVisionFramebufferProjection(J3DModelData*) {
+    return false;
 }
 
 void RegisterVisionCompositor(const void*) {}
