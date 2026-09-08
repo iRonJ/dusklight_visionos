@@ -207,8 +207,18 @@ bool J3DMatPacket::isSame(J3DMatPacket* pOther) const {
     return mMaterialID == pOther->mMaterialID && (mMaterialID & 0x80000000) == 0;
 }
 
+#if TARGET_PC
+thread_local J3DMatPacket::DrawOverride J3DMatPacket::sDrawOverride = nullptr;
+#endif
+
 void J3DMatPacket::draw() {
     ZoneScoped;
+#if TARGET_PC
+    if (sDrawOverride != nullptr) {
+        sDrawOverride(this);
+        return;
+    }
+#endif
 #if TARGET_PC 
     j3dSys.setTexture(mpTexture);
 #endif

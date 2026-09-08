@@ -143,6 +143,8 @@ void J3DDifferedTexMtx::loadExecute(f32 const (*param_0)[4]) {
                 }
                 case 2:
                 case 8: {
+                    // Cancel the same view used by the geometry. The neutral
+                    // projection override would leave a residual head pose.
                     MTXInverse(j3dSys.getViewMtx(), sp_e8);
                     MTXConcat(tex_mtx_obj->getMtx(i), sp_e8, sp_e8);
                     mtx = &sp_e8;

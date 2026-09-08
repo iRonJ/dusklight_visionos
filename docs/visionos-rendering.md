@@ -39,9 +39,11 @@ fallback when a complete dual-eye capture cannot be produced.
 
 ARKit head pose keeps the diorama quad stable in world space and gives Compositor Services a device
 anchor for late reprojection. On the `visionos-limited-6dof` branch, the compositor also publishes
-the device transform relative to the current diorama anchor. The GX renderer maps that relative
-translation and orientation into the game's presentation-camera basis before applying the left and
-right eye offsets.
+the device transform relative to the pose captured by the app's Recenter command. Translation is
+computed in that captured orientation's local basis, and rotation is
+`inverse(recenter orientation) * current orientation`, so the captured pose is neutral regardless
+of its angle in ARKit world space. The GX renderer maps that relative translation and orientation
+into the game's presentation-camera basis before applying the left and right eye offsets.
 
 For comfort, this is deliberately not an unrestricted VR camera:
 
@@ -241,16 +243,19 @@ then places the quad in front of that reference. Recenter discards the reference
 one on the next tracked frame. The reference is kept across compositor-layer replacement so opening
 Home View or a notification does not automatically recenter the diorama.
 
-Swift scene phase and compositor state are both forwarded to the engine. If the app or compositor
-is inactive, `m_Do_main.cpp` pauses audio and stops advancing/rendering the game while preserving
-the process and game session. When the layer resumes, the frame timer is reset. If visionOS
+The immersive scene phase, compositor state, and explicit companion-window Pause control are kept as
+independent inputs to the engine gate. If any input suspends the session, `m_Do_main.cpp` pauses audio
+and blocks on a condition variable without advancing or rendering the game. Resume wakes the same
+game thread, resets frame timing, and preserves the current session. If visionOS
 replaces the `LayerRenderer`, the old compositor thread is stopped and joined before its host is
 released; destroying a joinable C++ thread caused an earlier crash.
 
 The companion window is the supported control surface for aspect ratio, physical width, physical
-distance, convergence plane, recenter, and resume. Tracking-area rendering and spatial-event code
-exists for direct manipulation, but direct pinch manipulation of the quad is not currently reliable
-and is not advertised as supported.
+distance, convergence plane, recenter, and explicit Pause/Resume. Manual pause freezes the latest
+diorama frame and remains set across a Home View interruption until Resume is selected. The panel
+closes after eight seconds of inactivity while the game is running; pinching the game quad opens it
+again. Tracking-area rendering and spatial-event code exists for this selection gesture, but direct
+pinch manipulation of the quad is not currently reliable and is not advertised as supported.
 
 ## Projection-textured effects
 
@@ -266,13 +271,60 @@ The current fixes are split across:
 - The water/effect actors that construct their own projection matrices, including the `lv3Water`,
   groundwater, portal, mirror-hole, and related environment paths.
 - `JPADrawInfo`, which applies the same correction to projection-textured particles.
-- A per-eye `retry_captue_frame()` before invisible framebuffer-sampling lists, with copy dimensions
+- A per-eye `retry_capture_frame()` before invisible framebuffer-sampling lists, with copy dimensions
   matching the actual half-resolution framebuffer texture.
 
 These paths are data- and material-dependent. A newly encountered effect that uses texture names
 such as `dummy` or `fbtex_dummy`, an invisible draw list, or its own LightPerspective matrix may
-need the same per-eye correction. Dark sewer water is improved but still has known residual stereo
-error, so this area should not be considered exhaustive.
+need the same per-eye correction. Texture matrices that cancel view space must use the inverse of
+the **actual eye view**, including head pose. Using the neutral projection-view override for that
+inverse leaves an `inverse(neutral view) * tracked view` residual, making the projected effect move
+with the user's head even within a single eye. The neutral override remains available for forward
+construction of authored environment projections; it must not replace view-space cancellation.
+
+An earlier camera-lock fallback classified Castle Sewer's `GRDWATER` actor and loaded room/background
+models with framebuffer textures. That lock is no longer active: the current stereo renderer suppresses
+the native framebuffer overlays instead, so bounded head tracking stays enabled.
+
+Lake Hylia is an important coverage test: `F_SP115/R00_00.arc` contains ordinary `MA06`/`MA09` water,
+while a separate `BG_OBJ` loads `Object/@bg0020.arc`. Its `model0_1.bmd` contains
+`cc_MA02_IndirectWater_v`, uses `fbtex_dummy` plus `M_WaterIndirect_Fix`, and has view-projection
+texgen mode 9. Looking only at room models misses that overlay entirely. These archive/model names
+identify the verified test case; runtime detection does not hardcode them.
+
+During stereo draws, native materials in the invisible opaque/translucent lists remain suppressed.
+This preserves the actual underwater scene's per-eye geometry without projecting a screenshot onto
+the surface. The ordinary base water, foam, and separate interaction effects keep their original paths;
+flatscreen gameplay retains its native reflection/refraction overlays.
+
+### Lightweight surface replacement
+
+`VisionWaterSurface.cpp` selectively draws a replacement for verified `MA02` materials that bind
+`fbtex_dummy` in slot 0 and `M_WaterIndirect_Fix` in slot 1. This includes Lake Hylia's
+`@bg0020/model0_1.bmd` and Castle Sewer's `Water/water_b.bmd`. Other materials remain on the baseline
+fallback. The existing **Disable Water Refraction** setting also disables the replacement for A/B tests.
+
+- A scoped, thread-local `J3DMatPacket::sDrawOverride` consumes matching packets without executing
+  their native material/display lists. Unknown material packets are skipped, not re-enabled.
+- The original surface mesh and per-eye shape matrices provide placement, animation, and stereo depth.
+  No new plane is introduced and no shared material or texture resource is rewritten.
+- Coordinate set 1 uses authored vertex UVs and a mode-0 texture matrix. The replacement reuses that
+  animated matrix in reserved `GX_TEXMTX9`, never the mode-9 camera projection in coordinate set 0.
+  Missing UVs, indexed texture selectors, and unsupported texture-matrix load modes are rejected.
+- One GX TEV stage samples the ripple map's red channel as low-opacity modulation of an ambient-tinted
+  sheen. `mWaterSurfaceShineRate` controls its strength. Aurora generates the ordinary WGSL shader;
+  there is no new texture-cache API, CPU image generation, framebuffer capture, or per-frame upload.
+- The surface depth-tests against the scene and blends without depth or destination-alpha writes.
+  Its original late-list placement is retained. GX state is reset after a pass that changes it, while
+  the eye projection remains intact. Both eye draws reuse the simulation's texture animation.
+
+This is a subtle surface texture, **not** physically accurate refraction, Fresnel reflection, or a
+reconstruction of the reflected environment. Its transparency/order at intersecting effects and its
+appearance from below still need headset validation. The one-time log
+`[DuskStereo] Native-UV water surface active (no framebuffer capture)` confirms an actual replacement draw.
+Test Lake Hylia and Castle Sewer with head rotation/translation, each eye separately, underwater Link,
+an ordinary-water area, and menus/particles immediately after water. Compare the refraction toggle and
+check sustained frame time/thermals before expanding material coverage.
 
 ## Key files
 
@@ -283,6 +335,7 @@ error, so this area should not be considered exhaustive.
 | `src/dusk/main.cpp` | Starts one persistent game thread from Swift |
 | `src/m_Do/m_Do_main.cpp` | Engine lifecycle gating and stereo-frame dispatch |
 | `src/dusk/gfx/VisionStereoRenderer.cpp` | Camera snapshot, parallel/off-axis per-eye GX draws, fallback selection |
+| `src/dusk/gfx/VisionWaterSurface.cpp` | Selective native-UV surface sheen replacing broken framebuffer water |
 | `src/dusk/gfx/StereoParallax.cpp` | IOSurfaces, WebGPU publication/depth-warp fallback, shared fences |
 | `src/dusk/ios/VisionCompositorRenderer.mm` | Compositor Services frame loop, Metal draw, placement and resume |
 | `src/dusk/ios/VisionDioramaAnchor.mm` | ARKit session and predicted device-anchor lookup |

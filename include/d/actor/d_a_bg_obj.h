@@ -6,6 +6,10 @@
 #include "d/d_cc_d.h"
 #include "f_op/f_op_actor_mng.h"
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 class daBgObj_c;
 typedef int (daBgObj_c::*createHeapFunc)();
 typedef int (daBgObj_c::*createInitFunc)();
@@ -89,6 +93,10 @@ public:
 
     void setAction(u8 i_action) { mAction = i_action; }
 
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+    bool samplesFramebuffer() const { return mSamplesFramebuffer; }
+#endif
+
     static createHeapFunc mCreateHeapFunc[];
     static createInitFunc mCreateInitFunc[];
     static executeFunc mExecuteFunc[];
@@ -115,6 +123,10 @@ public:
     /* 0xD00 */ u8 field_0xd00;
     /* 0xD01 */ u8 field_0xd01;
     /* 0xD02 */ u8 field_0xd02;
+#if defined(TARGET_OS_VISION) && TARGET_OS_VISION
+private:
+    bool mSamplesFramebuffer = false;
+#endif
 };
 
 namespace daBgObj_prm {

@@ -1,5 +1,7 @@
 #pragma once
 
+class J3DModelData;
+
 namespace dusk::gfx {
 
 struct VisionHeadPose {
@@ -18,18 +20,30 @@ struct VisionHeadPose {
 // center-eye path (title screens, loading, and other 2D-only states).
 bool RenderVisionStereoFrame();
 
+// Returns true while actively rendering per-eye stereo passes on visionOS.
+// Used by draw lists and framebuffer capture to skip legacy 2D screen projections.
+bool IsVisionStereoDrawing();
+
 // Returns the horizontal off-axis projection term added for the active eye.
 // Screen-projected effects use this to sample that eye's framebuffer with the
 // same convergence plane as regular scene geometry.
 float GetVisionStereoProjectionShift();
 
+// Classify loaded models once; actor-owned cached results select a shared
+// camera fallback before either eye draws framebuffer-projected effects.
+bool ModelUsesVisionFramebufferProjection(J3DModelData* modelData);
+
 // CompositorServices can pause or replace its layer during system UI
-// interruptions. These functions let the engine stop advancing while no
-// drawable consumer exists, then resume the same game session.
+// interruptions. App activity and the explicit user pause are independent
+// inputs to the engine gate so neither can accidentally clear the other.
 void RegisterVisionCompositor(const void* token);
 void SetVisionCompositorRunning(const void* token, bool running);
 void SetVisionAppActive(bool active);
+void SetVisionGamePaused(bool paused);
 bool IsVisionCompositorRunning();
+bool IsVisionGamePaused();
+bool IsVisionGameRunnable();
+void WaitForVisionGameResume();
 
 // Publishes the latest device pose relative to the diorama's anchor reference.
 // The compositor thread writes it and the game render thread consumes a coherent

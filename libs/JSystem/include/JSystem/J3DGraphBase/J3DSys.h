@@ -208,6 +208,12 @@ struct J3DSys {
 };
 
 extern u32 j3dDefaultViewNo;
+
+// Projected materials normally consume the current J3D view. Presentation
+// renderers can provide a second view for explicitly marked texture matrices.
+void J3DSetTexProjectionViewOverride(const Mtx viewMtx);
+void J3DClearTexProjectionViewOverride();
+MtxP J3DGetTexProjectionViewMtx(bool useOverride);
 extern J3DSys j3dSys;
 
 #endif /* J3DSYS_H */

@@ -290,20 +290,22 @@ void main01(void) {
         eventsDone:;
 
 #if defined(__APPLE__) && defined(TARGET_OS_VISION) && TARGET_OS_VISION
-        const bool compositorRunning = dusk::gfx::IsVisionCompositorRunning();
-        static bool s_compositorWasRunning = true;
-        if (compositorRunning != s_compositorWasRunning) {
-            s_compositorWasRunning = compositorRunning;
-            dusk::audio::SetPaused(!compositorRunning);
-            if (compositorRunning) {
+        const bool gameRunnable = dusk::gfx::IsVisionGameRunnable();
+        static bool s_gameWasRunnable = true;
+        if (gameRunnable != s_gameWasRunnable) {
+            s_gameWasRunnable = gameRunnable;
+            dusk::audio::SetPaused(!gameRunnable);
+            if (gameRunnable) {
                 dusk::game_clock::reset_frame_timer();
             }
-            DuskLog.info("[Dusklight] Compositor {}: game session {}",
-                         compositorRunning ? "resumed" : "paused",
-                         compositorRunning ? "continuing" : "preserved");
+            DuskLog.info("[Dusklight] Game session {}",
+                         gameRunnable ? "resumed" : "suspended");
         }
-        if (!compositorRunning) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if (!gameRunnable) {
+            // An Aurora unpause event can arrive after the visionOS session
+            // gate closes. Compose the two pause sources before blocking.
+            dusk::audio::SetPaused(true);
+            dusk::gfx::WaitForVisionGameResume();
             continue;
         }
 #endif

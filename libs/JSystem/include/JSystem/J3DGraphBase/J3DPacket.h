@@ -286,6 +286,11 @@ public:
  */
 class J3DMatPacket : public J3DDrawPacket {
 public:
+#if TARGET_PC
+    // Scoped replacement passes can consume a packet without loading its native material.
+    using DrawOverride = void (*)(J3DMatPacket*);
+    static thread_local DrawOverride sDrawOverride;
+#endif
     J3DMatPacket();
     void addShapePacket(J3DShapePacket*);
     void beginDiff();
