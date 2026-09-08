@@ -282,18 +282,9 @@ inverse leaves an `inverse(neutral view) * tracked view` residual, making the pr
 with the user's head even within a single eye. The neutral override remains available for forward
 construction of authored environment projections; it must not replace view-space cancellation.
 
-The camera fallback covers Castle Sewer's `GRDWATER` actor and loaded background models with
-`dummy`/`fbtex_dummy` framebuffer textures or `MA02`/`MA10` projection materials. Both the room actor
-(`daBg_c::createHeap()`) and separate background objects (`daBgObj_c::CreateHeap()`) classify their
-models once, after texture sharing. All model variants participate, even if not currently visible.
-Before either eye draws, the stereo renderer checks the loaded actors and
-smoothly neutralizes bounded 6DOF offsets when necessary, while retaining independent stereo draws.
-The lock lasts until the affected actors/rooms unload, including while water is offscreen, to prevent
-camera-policy flicker. Normal controller-driven game camera movement and compositor world anchoring
-remain active. Ordinary water without these effects retains head tracking. State changes emit one
-`[DuskStereo] Framebuffer-water camera lock` message with the stage, room, and actor ID for validation.
-This is a conservative compatibility fallback, not a complete reconstruction of every legacy water
-effect; new framebuffer-sampling actor types still require validation.
+An earlier camera-lock fallback classified Castle Sewer's `GRDWATER` actor and loaded room/background
+models with framebuffer textures. That lock is no longer active: the current stereo renderer suppresses
+the native framebuffer overlays instead, so bounded head tracking stays enabled.
 
 Lake Hylia is an important coverage test: `F_SP115/R00_00.arc` contains ordinary `MA06`/`MA09` water,
 while a separate `BG_OBJ` loads `Object/@bg0020.arc`. Its `model0_1.bmd` contains
@@ -301,14 +292,39 @@ while a separate `BG_OBJ` loads `Object/@bg0020.arc`. Its `model0_1.bmd` contain
 texgen mode 9. Looking only at room models misses that overlay entirely. These archive/model names
 identify the verified test case; runtime detection does not hardcode them.
 
-Dusklight skips the invisible opaque and translucent reflection/refraction overlay lists
-during stereoscopic rendering (`dusk::gfx::IsVisionStereoDrawing()`), matching the proven
-solution used in TPVR. This reveals the authentic base 3D water layer (`model0.bmd` in Lake Hylia,
-`mModel1` in Castle Sewer) with animated ripples, foam, transparency, and murky underwater fog,
-while eliminating 2D perspective magnification, flat zero-disparity collapse, and redundant per-eye
-framebuffer captures (`retry_captue_frame()`). Because base water geometry does not sample the
-framebuffer, bounded 6DOF head tracking remains fully active without rotation doubling or jitter.
-Flatscreen 2D gameplay retains the standard reflection overlay.
+During stereo draws, native materials in the invisible opaque/translucent lists remain suppressed.
+This preserves the actual underwater scene's per-eye geometry without projecting a screenshot onto
+the surface. The ordinary base water, foam, and separate interaction effects keep their original paths;
+flatscreen gameplay retains its native reflection/refraction overlays.
+
+### Lightweight surface replacement
+
+`VisionWaterSurface.cpp` selectively draws a replacement for verified `MA02` materials that bind
+`fbtex_dummy` in slot 0 and `M_WaterIndirect_Fix` in slot 1. This includes Lake Hylia's
+`@bg0020/model0_1.bmd` and Castle Sewer's `Water/water_b.bmd`. Other materials remain on the baseline
+fallback. The existing **Disable Water Refraction** setting also disables the replacement for A/B tests.
+
+- A scoped, thread-local `J3DMatPacket::sDrawOverride` consumes matching packets without executing
+  their native material/display lists. Unknown material packets are skipped, not re-enabled.
+- The original surface mesh and per-eye shape matrices provide placement, animation, and stereo depth.
+  No new plane is introduced and no shared material or texture resource is rewritten.
+- Coordinate set 1 uses authored vertex UVs and a mode-0 texture matrix. The replacement reuses that
+  animated matrix in reserved `GX_TEXMTX9`, never the mode-9 camera projection in coordinate set 0.
+  Missing UVs, indexed texture selectors, and unsupported texture-matrix load modes are rejected.
+- One GX TEV stage samples the ripple map's red channel as low-opacity modulation of an ambient-tinted
+  sheen. `mWaterSurfaceShineRate` controls its strength. Aurora generates the ordinary WGSL shader;
+  there is no new texture-cache API, CPU image generation, framebuffer capture, or per-frame upload.
+- The surface depth-tests against the scene and blends without depth or destination-alpha writes.
+  Its original late-list placement is retained. GX state is reset after a pass that changes it, while
+  the eye projection remains intact. Both eye draws reuse the simulation's texture animation.
+
+This is a subtle surface texture, **not** physically accurate refraction, Fresnel reflection, or a
+reconstruction of the reflected environment. Its transparency/order at intersecting effects and its
+appearance from below still need headset validation. The one-time log
+`[DuskStereo] Native-UV water surface active (no framebuffer capture)` confirms an actual replacement draw.
+Test Lake Hylia and Castle Sewer with head rotation/translation, each eye separately, underwater Link,
+an ordinary-water area, and menus/particles immediately after water. Compare the refraction toggle and
+check sustained frame time/thermals before expanding material coverage.
 
 ## Key files
 
@@ -319,6 +335,7 @@ Flatscreen 2D gameplay retains the standard reflection overlay.
 | `src/dusk/main.cpp` | Starts one persistent game thread from Swift |
 | `src/m_Do/m_Do_main.cpp` | Engine lifecycle gating and stereo-frame dispatch |
 | `src/dusk/gfx/VisionStereoRenderer.cpp` | Camera snapshot, parallel/off-axis per-eye GX draws, fallback selection |
+| `src/dusk/gfx/VisionWaterSurface.cpp` | Selective native-UV surface sheen replacing broken framebuffer water |
 | `src/dusk/gfx/StereoParallax.cpp` | IOSurfaces, WebGPU publication/depth-warp fallback, shared fences |
 | `src/dusk/ios/VisionCompositorRenderer.mm` | Compositor Services frame loop, Metal draw, placement and resume |
 | `src/dusk/ios/VisionDioramaAnchor.mm` | ARKit session and predicted device-anchor lookup |
